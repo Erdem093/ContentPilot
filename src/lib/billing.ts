@@ -14,7 +14,7 @@ export const PLANS: PlanConfig[] = [
   {
     key: "starter",
     name: "Starter",
-    price: "$19",
+    price: "£10",
     period: "/month",
     envVar: "VITE_STRIPE_STARTER_PRICE_ID",
     features: ["10 pipeline runs/month", "All artifact types", "Email support", "Basic analytics"],
@@ -22,7 +22,7 @@ export const PLANS: PlanConfig[] = [
   {
     key: "pro",
     name: "Pro",
-    price: "$49",
+    price: "£25",
     period: "/month",
     envVar: "VITE_STRIPE_PRO_PRICE_ID",
     features: ["50 pipeline runs/month", "All artifact types", "Priority support", "Advanced analytics", "API access"],
