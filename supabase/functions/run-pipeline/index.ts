@@ -2,6 +2,44 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeaders, jsonResponse } from "../_shared/cors.ts";
 
 const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") ?? "gpt-4.1-mini";
+const AGENT_VERSION = "v1";
+
+type AgentName = "HookAgent" | "ScriptAgent" | "TitleAgent" | "StrategyAgent";
+type ArtifactType = "hook" | "script" | "title" | "strategy";
+
+type AgentDefinition = {
+  name: AgentName;
+  artifactType: ArtifactType;
+  systemPrompt: string;
+};
+
+type RunContext = {
+  userId: string;
+  runId: string;
+  videoId: string;
+  title: string;
+  description: string | null;
+  memorySummary: string;
+};
+
+type AgentOutput = {
+  content: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+};
+
+type AgentExecutionMetrics = {
+  agent_name: AgentName;
+  artifact_type: ArtifactType;
+  latency_ms: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  status: "completed" | "failed";
+  error_message: string | null;
+};
 
 const MODEL_PRICING_PER_1M: Record<string, { input: number; output: number }> = {
   "gpt-4.1-mini": { input: 0.4, output: 1.6 },
@@ -9,12 +47,32 @@ const MODEL_PRICING_PER_1M: Record<string, { input: number; output: number }> = 
   "gpt-4o-mini": { input: 0.15, output: 0.6 },
 };
 
-type GeneratedArtifacts = {
-  story: string;
-  script: string;
-  hook: string;
-  title: string;
-};
+const AGENTS: AgentDefinition[] = [
+  {
+    name: "HookAgent",
+    artifactType: "hook",
+    systemPrompt:
+      "You are HookAgent. Generate 3 short, highly clickable opening hook options for a social video. Keep outputs concise and specific.",
+  },
+  {
+    name: "ScriptAgent",
+    artifactType: "script",
+    systemPrompt:
+      "You are ScriptAgent. Generate a practical creator-ready short video script with intro, body beats, and outro CTA.",
+  },
+  {
+    name: "TitleAgent",
+    artifactType: "title",
+    systemPrompt:
+      "You are TitleAgent. Generate title options and one thumbnail text concept optimized for CTR.",
+  },
+  {
+    name: "StrategyAgent",
+    artifactType: "strategy",
+    systemPrompt:
+      "You are StrategyAgent. Generate platform strategy notes: audience angle, retention tactic, and posting guidance.",
+  },
+];
 
 function estimateCostUsd(model: string, promptTokens: number, completionTokens: number): number {
   const pricing = MODEL_PRICING_PER_1M[model] ?? MODEL_PRICING_PER_1M["gpt-4.1-mini"];
@@ -53,8 +111,140 @@ async function maybeEmitAnywayEvent(payload: Record<string, unknown>) {
     },
     body: JSON.stringify(payload),
   }).catch(() => {
-    // Keep tracing best-effort for demo stability.
+    // Keep observability best-effort for demo reliability.
   });
+}
+
+async function loadMemory(
+  adminClient: ReturnType<typeof createClient>,
+  userId: string,
+  videoId: string,
+): Promise<string> {
+  const [{ data: memoryRows }, { data: feedbackRows }] = await Promise.all([
+    adminClient
+      .from("agent_memory")
+      .select("key, value, source, video_id, updated_at")
+      .eq("user_id", userId)
+      .or(`video_id.eq.${videoId},video_id.is.null`)
+      .order("updated_at", { ascending: false })
+      .limit(10),
+    adminClient
+      .from("run_feedback")
+      .select("reason_code, free_text, created_at")
+      .eq("user_id", userId)
+      .eq("video_id", videoId)
+      .order("created_at", { ascending: false })
+      .limit(5),
+  ]);
+
+  const memorySummary = (memoryRows || [])
+    .map((row) => {
+      const scoped = row.video_id ? "video" : "global";
+      return `[${row.source}/${scoped}] ${row.key}: ${JSON.stringify(row.value)}`;
+    })
+    .join("\n");
+
+  const feedbackSummary = (feedbackRows || [])
+    .map((row) => `[feedback] ${row.reason_code}${row.free_text ? ` - ${row.free_text}` : ""}`)
+    .join("\n");
+
+  const combined = [memorySummary, feedbackSummary].filter(Boolean).join("\n");
+  return combined || "No prior memory available.";
+}
+
+async function upsertMemory(
+  adminClient: ReturnType<typeof createClient>,
+  userId: string,
+  videoId: string,
+  key: string,
+  value: Record<string, unknown>,
+  source: string,
+) {
+  const { data: existing } = await adminClient
+    .from("agent_memory")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("video_id", videoId)
+    .eq("key", key)
+    .limit(1)
+    .maybeSingle();
+
+  if (existing?.id) {
+    await adminClient
+      .from("agent_memory")
+      .update({ value, source, updated_at: new Date().toISOString() })
+      .eq("id", existing.id);
+    return;
+  }
+
+  await adminClient.from("agent_memory").insert({
+    user_id: userId,
+    video_id: videoId,
+    key,
+    value,
+    source,
+  });
+}
+
+async function callAgent(
+  openAiApiKey: string,
+  agent: AgentDefinition,
+  context: RunContext,
+): Promise<AgentOutput> {
+  const userPrompt = [
+    `Video Title: ${context.title}`,
+    `Video Description: ${context.description ?? "(none)"}`,
+    "\nMemory and feedback context:",
+    context.memorySummary,
+    "\nReturn JSON with this exact shape: {\"content\": \"...\"}.",
+  ].join("\n");
+
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${openAiApiKey}`,
+    },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      temperature: 0.7,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: `${agent.systemPrompt} You are part of a multi-agent swarm orchestrated for creator workflows.`,
+        },
+        {
+          role: "user",
+          content: userPrompt,
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`${agent.name} OpenAI error: ${text}`);
+  }
+
+  const json = await response.json();
+  const rawContent = json?.choices?.[0]?.message?.content;
+  if (!rawContent || typeof rawContent !== "string") {
+    throw new Error(`${agent.name} missing JSON content`);
+  }
+
+  const parsed = JSON.parse(rawContent) as { content?: string };
+  const content = parsed.content?.trim();
+  if (!content) {
+    throw new Error(`${agent.name} returned empty content`);
+  }
+
+  return {
+    content,
+    promptTokens: Number(json?.usage?.prompt_tokens ?? 0),
+    completionTokens: Number(json?.usage?.completion_tokens ?? 0),
+    totalTokens: Number(json?.usage?.total_tokens ?? 0),
+  };
 }
 
 Deno.serve(async (req) => {
@@ -113,6 +303,7 @@ Deno.serve(async (req) => {
   let runId: string | null = null;
   const anywayProjectId = Deno.env.get("ANYWAY_PROJECT_ID") ?? undefined;
   const trace = buildTrace(anywayProjectId);
+  const metrics: AgentExecutionMetrics[] = [];
 
   try {
     const { data: run, error: runInsertError } = await adminClient
@@ -134,72 +325,126 @@ Deno.serve(async (req) => {
 
     runId = run.id;
 
-    const prompt = [
-      `Video title: ${video.title}`,
-      `Video description: ${video.description ?? "(none)"}`,
-      "Generate JSON with keys: story, script, hook, title.",
-      "Each key should contain plain text, concise and creator-ready.",
-    ].join("\n");
+    const memorySummary = await loadMemory(adminClient, user.id, video.id);
 
-    const completionResponse = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${openAiApiKey}`,
-      },
-      body: JSON.stringify({
-        model: OPENAI_MODEL,
-        temperature: 0.7,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a content strategist agent. Return only JSON with keys story, script, hook, title.",
-          },
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-      }),
+    await maybeEmitAnywayEvent({
+      event_type: "trace_start",
+      trace_id: trace.traceId,
+      trace_url: trace.traceUrl,
+      run_id: runId,
+      user_id: user.id,
+      video_id: video.id,
+      pipeline: "content_generation_pipeline",
+      model: OPENAI_MODEL,
+      created_at: new Date().toISOString(),
     });
 
-    if (!completionResponse.ok) {
-      const apiError = await completionResponse.text();
-      throw new Error(`OpenAI error: ${apiError}`);
-    }
-
-    const completionJson = await completionResponse.json();
-    const rawContent = completionJson?.choices?.[0]?.message?.content;
-
-    if (!rawContent || typeof rawContent !== "string") {
-      throw new Error("OpenAI response did not include JSON content");
-    }
-
-    const parsed = JSON.parse(rawContent) as Partial<GeneratedArtifacts>;
-    const artifacts: GeneratedArtifacts = {
-      story: parsed.story?.trim() || "Story generation failed",
-      script: parsed.script?.trim() || "Script generation failed",
-      hook: parsed.hook?.trim() || "Hook generation failed",
-      title: parsed.title?.trim() || "Title generation failed",
+    const context: RunContext = {
+      userId: user.id,
+      runId,
+      videoId: video.id,
+      title: video.title,
+      description: video.description,
+      memorySummary,
     };
 
-    const { error: artifactError } = await adminClient.from("artifacts").insert([
-      { run_id: runId, user_id: user.id, type: "story", content: artifacts.story },
-      { run_id: runId, user_id: user.id, type: "script", content: artifacts.script },
-      { run_id: runId, user_id: user.id, type: "hook", content: artifacts.hook },
-      { run_id: runId, user_id: user.id, type: "title", content: artifacts.title },
-    ]);
+    const artifactRows: Array<{ run_id: string; user_id: string; type: string; content: string; agent_name: string; agent_version: string }> = [];
+
+    for (const agent of AGENTS) {
+      const spanStart = Date.now();
+      const spanId = crypto.randomUUID();
+
+      await maybeEmitAnywayEvent({
+        event_type: "span_start",
+        trace_id: trace.traceId,
+        span_id: spanId,
+        run_id: runId,
+        span_name: `${agent.name}.generate`,
+        agent_name: agent.name,
+        artifact_type: agent.artifactType,
+        started_at: new Date().toISOString(),
+      });
+
+      try {
+        const result = await callAgent(openAiApiKey, agent, context);
+        const costUsd = estimateCostUsd(OPENAI_MODEL, result.promptTokens, result.completionTokens);
+        const latencyMs = Date.now() - spanStart;
+
+        artifactRows.push({
+          run_id: runId,
+          user_id: user.id,
+          type: agent.artifactType,
+          content: result.content,
+          agent_name: agent.name,
+          agent_version: AGENT_VERSION,
+        });
+
+        const metric: AgentExecutionMetrics = {
+          agent_name: agent.name,
+          artifact_type: agent.artifactType,
+          latency_ms: latencyMs,
+          prompt_tokens: result.promptTokens,
+          completion_tokens: result.completionTokens,
+          total_tokens: result.totalTokens,
+          cost_usd: costUsd,
+          status: "completed",
+          error_message: null,
+        };
+        metrics.push(metric);
+
+        await maybeEmitAnywayEvent({
+          event_type: "span_end",
+          trace_id: trace.traceId,
+          span_id: spanId,
+          run_id: runId,
+          span_name: `${agent.name}.generate`,
+          ...metric,
+          ended_at: new Date().toISOString(),
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown agent error";
+        const metric: AgentExecutionMetrics = {
+          agent_name: agent.name,
+          artifact_type: agent.artifactType,
+          latency_ms: Date.now() - spanStart,
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          total_tokens: 0,
+          cost_usd: 0,
+          status: "failed",
+          error_message: message,
+        };
+        metrics.push(metric);
+
+        await maybeEmitAnywayEvent({
+          event_type: "span_error",
+          trace_id: trace.traceId,
+          span_id: spanId,
+          run_id: runId,
+          span_name: `${agent.name}.generate`,
+          ...metric,
+          ended_at: new Date().toISOString(),
+        });
+
+        throw new Error(`${agent.name} failed: ${message}`);
+      }
+    }
+
+    const { error: artifactError } = await adminClient.from("artifacts").insert(artifactRows);
 
     if (artifactError) {
       throw new Error(`Artifact insert failed: ${artifactError.message}`);
     }
 
-    const promptTokens = Number(completionJson?.usage?.prompt_tokens ?? 0);
-    const completionTokens = Number(completionJson?.usage?.completion_tokens ?? 0);
-    const totalTokens = Number(completionJson?.usage?.total_tokens ?? promptTokens + completionTokens);
-    const costUsd = estimateCostUsd(OPENAI_MODEL, promptTokens, completionTokens);
+    const totalTokens = metrics.reduce((sum, item) => sum + item.total_tokens, 0);
+    const totalCostUsd = Number(metrics.reduce((sum, item) => sum + item.cost_usd, 0).toFixed(4));
+
+    await upsertMemory(adminClient, user.id, video.id, "last_success_summary", {
+      title: video.title,
+      generated_agents: AGENTS.map((agent) => agent.name),
+      generated_at: new Date().toISOString(),
+      note: "Last run completed successfully.",
+    }, "run_summary");
 
     const { error: runUpdateError } = await adminClient
       .from("runs")
@@ -207,11 +452,12 @@ Deno.serve(async (req) => {
         status: "completed",
         completed_at: new Date().toISOString(),
         cost_tokens: totalTokens,
-        cost_usd: costUsd,
+        cost_usd: totalCostUsd,
         model: OPENAI_MODEL,
         trace_id: trace.traceId,
         trace_url: trace.traceUrl,
         error_message: null,
+        agent_metrics: metrics,
       })
       .eq("id", runId);
 
@@ -220,6 +466,7 @@ Deno.serve(async (req) => {
     }
 
     await maybeEmitAnywayEvent({
+      event_type: "trace_end",
       trace_id: trace.traceId,
       trace_url: trace.traceUrl,
       run_id: runId,
@@ -227,7 +474,9 @@ Deno.serve(async (req) => {
       video_id: video.id,
       model: OPENAI_MODEL,
       total_tokens: totalTokens,
-      cost_usd: costUsd,
+      cost_usd: totalCostUsd,
+      agent_count: AGENTS.length,
+      failed_agent_count: metrics.filter((metric) => metric.status === "failed").length,
       status: "completed",
       created_at: new Date().toISOString(),
     });
@@ -235,8 +484,9 @@ Deno.serve(async (req) => {
     return jsonResponse(200, {
       runId,
       traceUrl: trace.traceUrl,
-      costUsd,
+      costUsd: totalCostUsd,
       costTokens: totalTokens,
+      agentCount: AGENTS.length,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
@@ -251,11 +501,13 @@ Deno.serve(async (req) => {
           trace_id: trace.traceId,
           trace_url: trace.traceUrl,
           model: OPENAI_MODEL,
+          agent_metrics: metrics,
         })
         .eq("id", runId);
     }
 
     await maybeEmitAnywayEvent({
+      event_type: "trace_error",
       trace_id: trace.traceId,
       trace_url: trace.traceUrl,
       run_id: runId,
@@ -264,6 +516,7 @@ Deno.serve(async (req) => {
       model: OPENAI_MODEL,
       status: "failed",
       error_message: message,
+      failed_agent_count: metrics.filter((metric) => metric.status === "failed").length,
       created_at: new Date().toISOString(),
     });
 
@@ -271,6 +524,7 @@ Deno.serve(async (req) => {
       error: message,
       runId,
       traceUrl: trace.traceUrl,
+      failedAgent: metrics.find((metric) => metric.status === "failed")?.agent_name ?? null,
     });
   }
 });

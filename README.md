@@ -1,67 +1,135 @@
-# 🚀 Content Pipeline Machine for Creators
+# Content Pipeline Machine
 
-> 🧪 Built for the Anyway & Animoca Minds Hackathon
+Built for the UK AI Agent Hackathon EP4 with sponsor-track focus on **Anyway** (observability/commercialization) and **Animoca Minds** (multi-agent + memory cognition).
 
-## 🧠 Overview
-Content Pipeline Machine is an AI-powered content autopilot for challenge-based creators. It transforms raw ideas into fully structured, high-performing videos by automating planning, scripting, hook generation, and performance analysis. Instead of spending hours on pre- and post-production, creators can focus on filming while the system handles everything else. The platform is built around an iterative workflow where each "run" generates multiple content artifacts (scripts, hooks, titles), allowing creators to refine and optimise their output over time.
+## What Is Implemented
 
----
+- Supabase auth + RLS-backed data model
+- Multi-agent server pipeline (`run-pipeline`) with 4 specialists:
+  - HookAgent
+  - ScriptAgent
+  - TitleAgent
+  - StrategyAgent
+- Per-run artifacts with agent metadata
+- Persistent memory + recursive feedback loop:
+  - `agent_memory`
+  - `run_feedback`
+  - `submit-run-feedback` function
+- Anyway-style trace + per-agent span event emission
+- Observability UI with per-agent metrics drilldown
+- Subscription billing:
+  - `create-checkout-session`
+  - `stripe-webhook`
+- Stripe Connect MVP:
+  - `create-connect-account`
+  - `create-connect-checkout-session`
+- Public landing page and SPA rewrites for Vercel
 
-## 🏗️ Architecture (High-Level)
+## Architecture Docs
 
-> 📌 Diagram coming soon — see `/docs/system-diagram.png`
+- [Architecture](docs/architecture.md)
+- [Demo Script](docs/demo-script.md)
 
-Frontend (Lovable / Next.js)
-↓
-Backend API (Node / Python)
-↓
-Agent Layer (OpenAI + Flock)
-↓
-Observability (Anyway SDK)
-↓
-Database (Postgres)
-↓
-Persistent Agents (Animoca Minds)
+## Core Data Model
 
----
+Main tables:
 
-## ⚙️ Setup (Coming Soon)
+- `videos`
+- `runs`
+- `artifacts`
+- `profiles`
+- `agent_memory`
+- `run_feedback`
 
-> Full setup instructions will be added here.
+Notable run fields:
 
-Planned steps:
-- Clone repository
-- Install dependencies
-- Configure environment variables (OpenAI, Flock, Anyway, Stripe)
-- Run development server
+- `trace_id`
+- `trace_url`
+- `cost_tokens`
+- `cost_usd`
+- `agent_metrics` (jsonb)
 
-## 📂 Project Structure
-/docs → Pitch materials, diagrams, and documentation
-/src → Application source code
-README.md → Project overview
+## Local Setup
 
-## 🧩 Core Concepts
+```bash
+npm install
+cp .env.example .env
+npm run dev
+```
 
-- **Video** → A content project (e.g. "Learn guitar in 24 hours")
-- **Run** → One execution of the AI pipeline
-- **Artifacts** → Outputs (scripts, hooks, titles, etc.)
-- **Approval Flow** → User selects and refines outputs
+## Required Frontend Env Vars (`.env`)
 
----
+- `VITE_SUPABASE_PROJECT_ID`
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_PUBLISHABLE_KEY`
+- `VITE_STRIPE_STARTER_PRICE_ID`
+- `VITE_STRIPE_PRO_PRICE_ID`
 
-## 💡 Vision
+## Supabase Migrations
 
-Build a system where:
-> One day of filming → fully automated multi-platform content pipeline
+```bash
+supabase db push
+```
 
----
+## Edge Functions
 
-## 📌 Status
+Deployed/used functions:
 
-🚧 MVP in development (Hackathon Build)
+- `run-pipeline`
+- `submit-run-feedback`
+- `create-checkout-session`
+- `stripe-webhook`
+- `create-connect-account`
+- `create-connect-checkout-session`
 
----
+Deploy manually:
 
-## 📄 Docs
+```bash
+supabase functions deploy run-pipeline
+supabase functions deploy submit-run-feedback
+supabase functions deploy create-checkout-session
+supabase functions deploy stripe-webhook
+supabase functions deploy create-connect-account
+supabase functions deploy create-connect-checkout-session
+```
 
-All supporting materials (pitch, diagrams, architecture notes) are in `/docs`.
+## Required Supabase Function Secrets
+
+### AI
+
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL` (optional, default `gpt-4.1-mini`)
+
+### Anyway
+
+- `ANYWAY_TRACE_BASE_URL` (for UI trace links)
+- `ANYWAY_PROJECT_ID` (optional)
+- `ANYWAY_API_URL` (optional event endpoint)
+- `ANYWAY_API_KEY` (optional)
+
+### Stripe Subscription
+
+- `STRIPE_SECRET_KEY`
+- `STRIPE_WEBHOOK_SECRET`
+- `STRIPE_STARTER_PRICE_ID`
+- `STRIPE_PRO_PRICE_ID`
+
+## Stripe Webhook
+
+Endpoint:
+
+- `https://<PROJECT_REF>.supabase.co/functions/v1/stripe-webhook`
+
+Recommended events:
+
+- `checkout.session.completed`
+- `customer.subscription.updated`
+- `customer.subscription.deleted`
+
+## Sponsor Demo Checklist
+
+- Trigger multi-agent run and show 4 agent outputs
+- Submit negative feedback and rerun with memory influence
+- Show observability trace link + per-agent metrics
+- Show subscription checkout path
+- Show Connect onboarding + platform-fee checkout path

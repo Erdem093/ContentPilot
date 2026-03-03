@@ -1,13 +1,17 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, Check, X } from "lucide-react";
+import { ArrowLeft, Check, MessageSquareWarning, X } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { AppLayout } from "@/components/AppLayout";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 
 interface ArtifactRow {
   id: string;
@@ -15,6 +19,8 @@ interface ArtifactRow {
   content: string | null;
   approval_status: string;
   created_at: string;
+  agent_name: string | null;
+  agent_version: string | null;
 }
 
 interface RunRow {
@@ -27,11 +33,20 @@ interface RunRow {
 }
 
 const TYPE_LABELS: Record<string, string> = {
-  story: "Story Structure",
+  strategy: "Strategy Notes",
   script: "Script Draft",
-  hook: "Hook Option",
+  hook: "Hook Options",
   title: "Title & Thumbnail",
+  story: "Story Structure",
 };
+
+const FEEDBACK_OPTIONS = [
+  { value: "too_long", label: "Too long" },
+  { value: "not_engaging", label: "Not engaging" },
+  { value: "wrong_tone", label: "Wrong tone" },
+  { value: "poor_hook", label: "Poor hook" },
+  { value: "other", label: "Other" },
+] as const;
 
 export default function RunDetail() {
   const { runId } = useParams();
@@ -39,30 +54,70 @@ export default function RunDetail() {
   const [run, setRun] = useState<RunRow | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false);
+  const [feedbackReason, setFeedbackReason] = useState<string>("not_engaging");
+  const [feedbackText, setFeedbackText] = useState("");
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
 
   const fetchData = async () => {
     if (!runId) return;
-    const [{ data: r }, { data: a }] = await Promise.all([
+    const [{ data: runData }, { data: artifactData }] = await Promise.all([
       supabase.from("runs").select("*").eq("id", runId).single(),
       supabase.from("artifacts").select("*").eq("run_id", runId).order("created_at"),
     ]);
-    setRun(r);
-    setArtifacts(a || []);
+    setRun(runData);
+    setArtifacts(artifactData || []);
     setLoading(false);
   };
 
-  useEffect(() => { fetchData(); }, [runId]);
+  useEffect(() => {
+    fetchData();
+  }, [runId]);
 
   const updateApproval = async (artifactId: string, status: "approved" | "rejected") => {
-    const { error } = await supabase.from("artifacts").update({
-      approval_status: status,
-      approved_at: status === "approved" ? new Date().toISOString() : null,
-    }).eq("id", artifactId);
+    const { error } = await supabase
+      .from("artifacts")
+      .update({
+        approval_status: status,
+        approved_at: status === "approved" ? new Date().toISOString() : null,
+      })
+      .eq("id", artifactId);
+
     if (error) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
-    } else {
-      fetchData();
+      return;
     }
+
+    fetchData();
+  };
+
+  const submitFeedback = async () => {
+    if (!runId) return;
+
+    setFeedbackSubmitting(true);
+    const { data, error } = await supabase.functions.invoke("submit-run-feedback", {
+      body: {
+        runId,
+        reasonCode: feedbackReason,
+        freeText: feedbackText.trim() || undefined,
+      },
+    });
+
+    if (error || (data as { error?: string } | null)?.error) {
+      toast({
+        title: "Feedback failed",
+        description: error?.message || (data as { error?: string } | null)?.error || "Unknown error",
+        variant: "destructive",
+      });
+      setFeedbackSubmitting(false);
+      return;
+    }
+
+    toast({ title: "Feedback saved", description: "Future runs will use this memory." });
+    setFeedbackText("");
+    setFeedbackReason("not_engaging");
+    setFeedbackDialogOpen(false);
+    setFeedbackSubmitting(false);
   };
 
   const statusBadge = (status: string) => {
@@ -72,11 +127,23 @@ export default function RunDetail() {
   };
 
   if (loading) {
-    return <AppLayout><div className="flex justify-center py-12"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" /></div></AppLayout>;
+    return (
+      <AppLayout>
+        <div className="flex justify-center py-12">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+        </div>
+      </AppLayout>
+    );
   }
 
   if (!run) {
-    return <AppLayout><div className="text-center py-12"><p className="text-muted-foreground">Run not found</p></div></AppLayout>;
+    return (
+      <AppLayout>
+        <div className="text-center py-12">
+          <p className="text-muted-foreground">Run not found</p>
+        </div>
+      </AppLayout>
+    );
   }
 
   const grouped = artifacts.reduce((acc, art) => {
@@ -91,13 +158,18 @@ export default function RunDetail() {
           <ArrowLeft className="mr-1 h-4 w-4" />Back to Video
         </Link>
 
-        <div>
-          <h1 className="text-3xl font-display font-bold">Run #{run.id.slice(0, 8)}</h1>
-          <div className="flex items-center gap-4 mt-2 text-sm text-muted-foreground">
-            <span>{format(new Date(run.started_at), "MMM d, yyyy · h:mm a")}</span>
-            {run.cost_tokens && <span>{run.cost_tokens.toLocaleString()} tokens</span>}
-            {run.cost_usd && <span>${Number(run.cost_usd).toFixed(4)}</span>}
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-display font-bold">Run #{run.id.slice(0, 8)}</h1>
+            <div className="flex items-center gap-4 mt-2 text-sm text-muted-foreground">
+              <span>{format(new Date(run.started_at), "MMM d, yyyy · h:mm a")}</span>
+              {run.cost_tokens && <span>{run.cost_tokens.toLocaleString()} tokens</span>}
+              {run.cost_usd && <span>${Number(run.cost_usd).toFixed(4)}</span>}
+            </div>
           </div>
+          <Button variant="outline" onClick={() => setFeedbackDialogOpen(true)}>
+            <MessageSquareWarning className="mr-2 h-4 w-4" />Why I didn't like this
+          </Button>
         </div>
 
         {Object.entries(grouped).map(([type, arts]) => (
@@ -108,13 +180,31 @@ export default function RunDetail() {
                 <Card key={art.id}>
                   <CardContent className="pt-5">
                     <div className="flex items-start justify-between mb-3">
-                      {statusBadge(art.approval_status)}
+                      <div className="space-y-2">
+                        {statusBadge(art.approval_status)}
+                        {art.agent_name && (
+                          <p className="text-xs text-muted-foreground">
+                            {art.agent_name}
+                            {art.agent_version ? ` (${art.agent_version})` : ""}
+                          </p>
+                        )}
+                      </div>
                       {art.approval_status === "pending" && (
                         <div className="flex gap-2">
-                          <Button size="sm" variant="outline" className="text-success border-success hover:bg-success/10" onClick={() => updateApproval(art.id, "approved")}>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="text-success border-success hover:bg-success/10"
+                            onClick={() => updateApproval(art.id, "approved")}
+                          >
                             <Check className="mr-1 h-3 w-3" />Approve
                           </Button>
-                          <Button size="sm" variant="outline" className="text-destructive border-destructive hover:bg-destructive/10" onClick={() => updateApproval(art.id, "rejected")}>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="text-destructive border-destructive hover:bg-destructive/10"
+                            onClick={() => updateApproval(art.id, "rejected")}
+                          >
                             <X className="mr-1 h-3 w-3" />Reject
                           </Button>
                         </div>
@@ -136,6 +226,42 @@ export default function RunDetail() {
           </Card>
         )}
       </div>
+
+      <Dialog open={feedbackDialogOpen} onOpenChange={setFeedbackDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Why didn&apos;t this run work for you?</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 pt-2">
+            <div className="space-y-2">
+              <Label>Feedback reason</Label>
+              <Select value={feedbackReason} onValueChange={setFeedbackReason}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose a reason" />
+                </SelectTrigger>
+                <SelectContent>
+                  {FEEDBACK_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Details (optional)</Label>
+              <Textarea
+                placeholder="Example: Keep hooks below 10 words and avoid clickbait phrasing."
+                value={feedbackText}
+                onChange={(event) => setFeedbackText(event.target.value)}
+              />
+            </div>
+            <Button onClick={submitFeedback} disabled={feedbackSubmitting} className="w-full">
+              {feedbackSubmitting ? "Saving..." : "Save Feedback"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </AppLayout>
   );
 }

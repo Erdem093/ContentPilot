@@ -8,3 +8,12 @@ verify_jwt = false
 
 [functions.run-pipeline]
 verify_jwt = false
+
+[functions.submit-run-feedback]
+verify_jwt = false
+
+[functions.create-connect-account]
+verify_jwt = false
+
+[functions.create-connect-checkout-session]
+verify_jwt = false

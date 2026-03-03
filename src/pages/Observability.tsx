@@ -1,10 +1,22 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { AppLayout } from "@/components/AppLayout";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { format } from "date-fns";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+
+interface AgentMetric {
+  agent_name: string;
+  artifact_type: string;
+  latency_ms: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  status: "completed" | "failed";
+  error_message: string | null;
+}
 
 interface RunRow {
   id: string;
@@ -17,6 +29,7 @@ interface RunRow {
   trace_url: string | null;
   model: string | null;
   error_message: string | null;
+  agent_metrics: AgentMetric[] | null;
 }
 
 export default function Observability() {
@@ -25,33 +38,38 @@ export default function Observability() {
 
   useEffect(() => {
     supabase.from("runs").select("*").order("started_at", { ascending: false }).limit(50).then(({ data }) => {
-      setRuns(data || []);
+      setRuns((data || []) as RunRow[]);
       setLoading(false);
     });
   }, []);
 
-  const totalCost = runs.reduce((s, r) => s + (Number(r.cost_usd) || 0), 0);
-  const totalTokens = runs.reduce((s, r) => s + (r.cost_tokens || 0), 0);
+  const totalCost = runs.reduce((sum, run) => sum + (Number(run.cost_usd) || 0), 0);
+  const totalTokens = runs.reduce((sum, run) => sum + (run.cost_tokens || 0), 0);
 
-  // Group runs by date for chart
-  const chartData = runs.reduce((acc, run) => {
-    const day = format(new Date(run.started_at), "MMM d");
-    const existing = acc.find((d) => d.date === day);
-    if (existing) {
-      existing.cost += Number(run.cost_usd) || 0;
-      existing.runs += 1;
-    } else {
-      acc.push({ date: day, cost: Number(run.cost_usd) || 0, runs: 1 });
-    }
-    return acc;
-  }, [] as { date: string; cost: number; runs: number }[]).reverse();
+  const chartData = useMemo(() => {
+    return runs
+      .reduce((acc, run) => {
+        const day = format(new Date(run.started_at), "MMM d");
+        const existing = acc.find((item) => item.date === day);
+
+        if (existing) {
+          existing.cost += Number(run.cost_usd) || 0;
+          existing.runs += 1;
+        } else {
+          acc.push({ date: day, cost: Number(run.cost_usd) || 0, runs: 1 });
+        }
+
+        return acc;
+      }, [] as { date: string; cost: number; runs: number }[])
+      .reverse();
+  }, [runs]);
 
   return (
     <AppLayout>
       <div className="max-w-5xl mx-auto space-y-8">
         <div>
           <h1 className="text-3xl font-display font-bold">Observability</h1>
-          <p className="text-muted-foreground mt-1">Track usage and costs across your pipeline runs</p>
+          <p className="text-muted-foreground mt-1">Pipeline traces, per-agent metrics, and run cost diagnostics</p>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -97,46 +115,72 @@ export default function Observability() {
         <Card>
           <CardHeader>
             <CardTitle className="font-display">Recent Runs</CardTitle>
-            <CardDescription>Cost breakdown per pipeline run</CardDescription>
+            <CardDescription>Per-agent execution metrics and traces</CardDescription>
           </CardHeader>
           <CardContent>
             {loading ? (
-              <div className="flex justify-center py-8"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary" /></div>
+              <div className="flex justify-center py-8">
+                <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary" />
+              </div>
             ) : runs.length === 0 ? (
               <p className="text-muted-foreground text-center py-8">No runs yet</p>
             ) : (
-              <div className="space-y-2">
-                {runs.map((run) => (
-                  <div key={run.id} className="flex items-center justify-between py-2 border-b last:border-0">
-                    <div>
-                      <p className="text-sm font-medium">Run #{run.id.slice(0, 8)}</p>
-                      <p className="text-xs text-muted-foreground">{format(new Date(run.started_at), "MMM d · h:mm a")}</p>
-                      <div className="flex items-center gap-2 mt-1">
-                        {run.trace_url && (
-                          <a
-                            href={run.trace_url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-xs text-primary hover:underline"
-                          >
-                            Trace
-                          </a>
-                        )}
-                        {run.model && <span className="text-xs text-muted-foreground">{run.model}</span>}
-                        {run.error_message && (
-                          <span className="text-xs text-destructive truncate max-w-80">{run.error_message}</span>
-                        )}
+              <div className="space-y-4">
+                {runs.map((run) => {
+                  const metrics = run.agent_metrics || [];
+                  const failedCount = metrics.filter((metric) => metric.status === "failed").length;
+                  const totalLatency = metrics.reduce((sum, metric) => sum + (metric.latency_ms || 0), 0);
+
+                  return (
+                    <div key={run.id} className="py-3 border-b last:border-0">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <p className="text-sm font-medium">Run #{run.id.slice(0, 8)}</p>
+                          <p className="text-xs text-muted-foreground">{format(new Date(run.started_at), "MMM d · h:mm a")}</p>
+                          <div className="flex items-center gap-2 mt-1">
+                            {run.trace_url && (
+                              <a href={run.trace_url} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline">
+                                Trace
+                              </a>
+                            )}
+                            {run.model && <span className="text-xs text-muted-foreground">{run.model}</span>}
+                            <span className="text-xs text-muted-foreground">
+                              {metrics.length} agents · {(totalLatency / 1000).toFixed(2)}s
+                            </span>
+                            {failedCount > 0 && <span className="text-xs text-destructive">{failedCount} failed</span>}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-4 text-sm">
+                          <span className="text-muted-foreground">{(run.cost_tokens || 0).toLocaleString()} tokens</span>
+                          <span className="font-medium">${(Number(run.cost_usd) || 0).toFixed(4)}</span>
+                          <Badge variant={run.status === "completed" ? "default" : run.status === "failed" ? "destructive" : "secondary"}>
+                            {run.status}
+                          </Badge>
+                        </div>
                       </div>
+
+                      {metrics.length > 0 && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-3">
+                          {metrics.map((metric, index) => (
+                            <div key={`${run.id}-${metric.agent_name}-${index}`} className="rounded-md border p-2 text-xs">
+                              <div className="flex items-center justify-between">
+                                <span className="font-medium">{metric.agent_name}</span>
+                                <Badge variant={metric.status === "completed" ? "outline" : "destructive"}>{metric.status}</Badge>
+                              </div>
+                              <p className="text-muted-foreground mt-1">
+                                {metric.artifact_type} · {(metric.latency_ms / 1000).toFixed(2)}s · {metric.total_tokens.toLocaleString()} tokens ·
+                                ${metric.cost_usd.toFixed(4)}
+                              </p>
+                              {metric.error_message && <p className="text-destructive mt-1">{metric.error_message}</p>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {run.error_message && <p className="text-xs text-destructive mt-2">{run.error_message}</p>}
                     </div>
-                    <div className="flex items-center gap-4 text-sm">
-                      <span className="text-muted-foreground">{(run.cost_tokens || 0).toLocaleString()} tokens</span>
-                      <span className="font-medium">${(Number(run.cost_usd) || 0).toFixed(4)}</span>
-                      <Badge variant={run.status === "completed" ? "default" : run.status === "failed" ? "destructive" : "secondary"}>
-                        {run.status}
-                      </Badge>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </CardContent>

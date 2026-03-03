@@ -3,7 +3,7 @@ import { AppLayout } from "@/components/AppLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Check } from "lucide-react";
+import { Check, Link as LinkIcon } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
@@ -14,7 +14,16 @@ type ProfileRow = {
   stripe_price_id: string | null;
   subscription_status: string | null;
   subscription_current_period_end: string | null;
+  stripe_connect_account_id: string | null;
 };
+
+async function readFunctionErrorMessage(error: unknown): Promise<string> {
+  const fallback = error instanceof Error ? error.message : "Unknown error";
+  const maybe = error as { context?: { json?: () => Promise<{ error?: string }> } };
+  if (!maybe.context?.json) return fallback;
+  const payload = await maybe.context.json().catch(() => null);
+  return payload?.error || fallback;
+}
 
 export default function Billing() {
   const { user } = useAuth();
@@ -23,44 +32,41 @@ export default function Billing() {
   const [runsUsed, setRunsUsed] = useState(0);
   const [loading, setLoading] = useState(true);
   const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
+  const [connectLoading, setConnectLoading] = useState<"account" | "checkout" | null>(null);
+
+  const fetchBillingData = async () => {
+    if (!user) return;
+
+    setLoading(true);
+
+    const now = new Date();
+    const periodStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+
+    const [{ data: profileData, error: profileError }, { count: runCount, error: runError }] = await Promise.all([
+      supabase
+        .from("profiles")
+        .select("stripe_price_id, subscription_status, subscription_current_period_end, stripe_connect_account_id")
+        .eq("user_id", user.id)
+        .single(),
+      supabase.from("runs").select("id", { count: "exact", head: true }).eq("user_id", user.id).gte("started_at", periodStart),
+    ]);
+
+    if (profileError) {
+      toast({ title: "Error", description: profileError.message, variant: "destructive" });
+    }
+
+    if (runError) {
+      toast({ title: "Error", description: runError.message, variant: "destructive" });
+    }
+
+    setProfile(profileData || null);
+    setRunsUsed(runCount || 0);
+    setLoading(false);
+  };
 
   useEffect(() => {
-    const fetchBillingData = async () => {
-      if (!user) return;
-
-      setLoading(true);
-
-      const now = new Date();
-      const periodStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-
-      const [{ data: profileData, error: profileError }, { count: runCount, error: runError }] = await Promise.all([
-        supabase
-          .from("profiles")
-          .select("stripe_price_id, subscription_status, subscription_current_period_end")
-          .eq("user_id", user.id)
-          .single(),
-        supabase
-          .from("runs")
-          .select("id", { count: "exact", head: true })
-          .eq("user_id", user.id)
-          .gte("started_at", periodStart),
-      ]);
-
-      if (profileError) {
-        toast({ title: "Error", description: profileError.message, variant: "destructive" });
-      }
-
-      if (runError) {
-        toast({ title: "Error", description: runError.message, variant: "destructive" });
-      }
-
-      setProfile(profileData || null);
-      setRunsUsed(runCount || 0);
-      setLoading(false);
-    };
-
     fetchBillingData();
-  }, [toast, user]);
+  }, [user]);
 
   const currentPlanName = resolvePlanName(profile?.stripe_price_id ?? null);
   const statusText = profile?.subscription_status ?? "inactive";
@@ -96,12 +102,7 @@ export default function Billing() {
     });
 
     if (error) {
-      let description = error.message;
-      const errorWithContext = error as { context?: { json?: () => Promise<{ error?: string }> } };
-      if (errorWithContext.context?.json) {
-        const payload = await errorWithContext.context.json().catch(() => null);
-        if (payload?.error) description = payload.error;
-      }
+      const description = await readFunctionErrorMessage(error);
       toast({ title: "Checkout failed", description, variant: "destructive" });
       setCheckoutLoading(null);
       return;
@@ -117,12 +118,71 @@ export default function Billing() {
     window.location.href = url;
   };
 
+  const startConnectOnboarding = async () => {
+    setConnectLoading("account");
+
+    const origin = window.location.origin;
+    const { data, error } = await supabase.functions.invoke("create-connect-account", {
+      body: {
+        refreshUrl: `${origin}/billing?connect=refresh`,
+        returnUrl: `${origin}/billing?connect=return`,
+      },
+    });
+
+    if (error) {
+      const description = await readFunctionErrorMessage(error);
+      toast({ title: "Connect setup failed", description, variant: "destructive" });
+      setConnectLoading(null);
+      return;
+    }
+
+    const url = (data as { url?: string })?.url;
+    if (!url) {
+      toast({ title: "Connect setup failed", description: "No onboarding URL returned", variant: "destructive" });
+      setConnectLoading(null);
+      return;
+    }
+
+    window.location.href = url;
+  };
+
+  const startConnectCheckout = async () => {
+    setConnectLoading("checkout");
+
+    const origin = window.location.origin;
+    const { data, error } = await supabase.functions.invoke("create-connect-checkout-session", {
+      body: {
+        successUrl: `${origin}/billing?connect_checkout=success`,
+        cancelUrl: `${origin}/billing?connect_checkout=cancel`,
+        amountPence: 1000,
+        platformFeePence: 200,
+        currency: "gbp",
+      },
+    });
+
+    if (error) {
+      const description = await readFunctionErrorMessage(error);
+      toast({ title: "Connect checkout failed", description, variant: "destructive" });
+      setConnectLoading(null);
+      return;
+    }
+
+    const url = (data as { url?: string })?.url;
+    if (!url) {
+      toast({ title: "Connect checkout failed", description: "No checkout URL returned", variant: "destructive" });
+      setConnectLoading(null);
+      return;
+    }
+
+    window.location.href = url;
+  };
+
   return (
     <AppLayout>
       <div className="max-w-4xl mx-auto space-y-8">
         <div>
           <h1 className="text-3xl font-display font-bold">Billing</h1>
-          <p className="text-muted-foreground mt-1">Manage your subscription and usage</p>
+          <p className="text-muted-foreground mt-1">Manage subscriptions and Connect commercialization flows</p>
         </div>
 
         <Card>
@@ -139,15 +199,16 @@ export default function Billing() {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div>
                   <p className="text-sm text-muted-foreground">Runs Used</p>
-                  <p className="text-3xl font-bold font-display">{runsUsed}{planLimit > 0 ? ` / ${planLimit}` : ""}</p>
+                  <p className="text-3xl font-bold font-display">
+                    {runsUsed}
+                    {planLimit > 0 ? ` / ${planLimit}` : ""}
+                  </p>
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Current Plan</p>
                   <div className="flex items-center gap-2">
                     <p className="text-3xl font-bold font-display">{currentPlanName}</p>
-                    <Badge variant={statusText === "active" || statusText === "trialing" ? "default" : "secondary"}>
-                      {statusText}
-                    </Badge>
+                    <Badge variant={statusText === "active" || statusText === "trialing" ? "default" : "secondary"}>{statusText}</Badge>
                   </div>
                 </div>
                 <div>
@@ -156,6 +217,34 @@ export default function Billing() {
                 </div>
               </div>
             )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="font-display">Stripe Connect MVP</CardTitle>
+            <CardDescription>Commercialization demo with application fee and destination transfer</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center gap-2">
+              <LinkIcon className="h-4 w-4 text-muted-foreground" />
+              <span className="text-sm text-muted-foreground">Connect account status:</span>
+              <Badge variant={profile?.stripe_connect_account_id ? "default" : "secondary"}>
+                {profile?.stripe_connect_account_id ? "connected" : "not connected"}
+              </Badge>
+              {profile?.stripe_connect_account_id && (
+                <span className="text-xs text-muted-foreground">{profile.stripe_connect_account_id}</span>
+              )}
+            </div>
+            <div className="flex flex-col md:flex-row gap-3">
+              <Button onClick={startConnectOnboarding} disabled={connectLoading !== null}>
+                {connectLoading === "account" ? "Opening..." : "Connect payouts (demo)"}
+              </Button>
+              <Button variant="outline" onClick={startConnectCheckout} disabled={connectLoading !== null}>
+                {connectLoading === "checkout" ? "Opening..." : "Pay with platform fee (demo)"}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">Default demo payment: £10 with £2 platform fee via Stripe Connect.</p>
           </CardContent>
         </Card>
 
@@ -186,12 +275,7 @@ export default function Billing() {
                       </li>
                     ))}
                   </ul>
-                  <Button
-                    className="w-full"
-                    variant={isCurrent ? "outline" : "default"}
-                    disabled={isCurrent || checkoutLoading === priceId}
-                    onClick={() => startCheckout(priceId)}
-                  >
+                  <Button className="w-full" variant={isCurrent ? "outline" : "default"} disabled={isCurrent || checkoutLoading === priceId} onClick={() => startCheckout(priceId)}>
                     {isCurrent ? "Current Plan" : checkoutLoading === priceId ? "Redirecting..." : "Upgrade"}
                   </Button>
                 </CardContent>

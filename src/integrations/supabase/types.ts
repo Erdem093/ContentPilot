@@ -16,6 +16,8 @@ export type Database = {
     Tables: {
       artifacts: {
         Row: {
+          agent_name: string | null
+          agent_version: string | null
           approval_status: string
           approved_at: string | null
           content: string | null
@@ -26,6 +28,8 @@ export type Database = {
           user_id: string
         }
         Insert: {
+          agent_name?: string | null
+          agent_version?: string | null
           approval_status?: string
           approved_at?: string | null
           content?: string | null
@@ -36,6 +40,8 @@ export type Database = {
           user_id: string
         }
         Update: {
+          agent_name?: string | null
+          agent_version?: string | null
           approval_status?: string
           approved_at?: string | null
           content?: string | null
@@ -55,12 +61,51 @@ export type Database = {
           },
         ]
       }
+      agent_memory: {
+        Row: {
+          id: string
+          key: string
+          source: string
+          updated_at: string
+          user_id: string
+          value: Json
+          video_id: string | null
+        }
+        Insert: {
+          id?: string
+          key: string
+          source: string
+          updated_at?: string
+          user_id: string
+          value: Json
+          video_id?: string | null
+        }
+        Update: {
+          id?: string
+          key?: string
+          source?: string
+          updated_at?: string
+          user_id?: string
+          value?: Json
+          video_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_memory_video_id_fkey"
+            columns: ["video_id"]
+            isOneToOne: false
+            referencedRelation: "videos"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       profiles: {
         Row: {
           avatar_url: string | null
           created_at: string
           id: string
           name: string | null
+          stripe_connect_account_id: string | null
           stripe_customer_id: string | null
           stripe_price_id: string | null
           stripe_subscription_id: string | null
@@ -74,6 +119,7 @@ export type Database = {
           created_at?: string
           id?: string
           name?: string | null
+          stripe_connect_account_id?: string | null
           stripe_customer_id?: string | null
           stripe_price_id?: string | null
           stripe_subscription_id?: string | null
@@ -87,6 +133,7 @@ export type Database = {
           created_at?: string
           id?: string
           name?: string | null
+          stripe_connect_account_id?: string | null
           stripe_customer_id?: string | null
           stripe_price_id?: string | null
           stripe_subscription_id?: string | null
@@ -99,6 +146,7 @@ export type Database = {
       }
       runs: {
         Row: {
+          agent_metrics: Json | null
           completed_at: string | null
           cost_tokens: number | null
           cost_usd: number | null
@@ -113,6 +161,7 @@ export type Database = {
           video_id: string
         }
         Insert: {
+          agent_metrics?: Json | null
           completed_at?: string | null
           cost_tokens?: number | null
           cost_usd?: number | null
@@ -127,6 +176,7 @@ export type Database = {
           video_id: string
         }
         Update: {
+          agent_metrics?: Json | null
           completed_at?: string | null
           cost_tokens?: number | null
           cost_usd?: number | null
@@ -143,6 +193,51 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "runs_video_id_fkey"
+            columns: ["video_id"]
+            isOneToOne: false
+            referencedRelation: "videos"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      run_feedback: {
+        Row: {
+          created_at: string
+          free_text: string | null
+          id: string
+          reason_code: string
+          run_id: string
+          user_id: string
+          video_id: string
+        }
+        Insert: {
+          created_at?: string
+          free_text?: string | null
+          id?: string
+          reason_code: string
+          run_id: string
+          user_id: string
+          video_id: string
+        }
+        Update: {
+          created_at?: string
+          free_text?: string | null
+          id?: string
+          reason_code?: string
+          run_id?: string
+          user_id?: string
+          video_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "run_feedback_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "runs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "run_feedback_video_id_fkey"
             columns: ["video_id"]
             isOneToOne: false
             referencedRelation: "videos"
