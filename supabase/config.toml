@@ -17,3 +17,9 @@ verify_jwt = false
 
 [functions.create-connect-checkout-session]
 verify_jwt = false
+
+[functions.openclaw-pull-jobs]
+verify_jwt = false
+
+[functions.openclaw-push-insights]
+verify_jwt = false

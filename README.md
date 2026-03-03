@@ -15,6 +15,10 @@ Built for the UK AI Agent Hackathon EP4 with sponsor-track focus on **Anyway** (
   - `agent_memory`
   - `run_feedback`
   - `submit-run-feedback` function
+- Deterministic memory compiler per agent:
+  - hard constraints
+  - style preferences
+  - weighted recent failures
 - Anyway-style trace + per-agent span event emission
 - Observability UI with per-agent metrics drilldown
 - Subscription billing:
@@ -23,7 +27,20 @@ Built for the UK AI Agent Hackathon EP4 with sponsor-track focus on **Anyway** (
 - Stripe Connect MVP:
   - `create-connect-account`
   - `create-connect-checkout-session`
+- OpenClaw bridge mode (external worker):
+  - `queue-youtube-analysis`
+  - `openclaw-pull-jobs`
+  - `openclaw-push-insights`
 - Public landing page and SPA rewrites for Vercel
+
+## Why 4 Specialists + 1 Orchestrator
+
+We intentionally use a `4+1` structure (Hook/Script/Title/Strategy + orchestrator) instead of a 6+ swarm for this sprint:
+
+- lower latency and lower token cost per run
+- cleaner accountability (one owner per artifact type)
+- easier tracing/debugging in Anyway and in-app observability
+- more predictable stability under hackathon time constraints
 
 ## Architecture Docs
 
@@ -48,6 +65,10 @@ Notable run fields:
 - `cost_tokens`
 - `cost_usd`
 - `agent_metrics` (jsonb)
+- `memory_applied` (jsonb)
+- `quality_delta` (jsonb)
+- `collector_export_status`
+- `collector_export_error`
 
 ## Local Setup
 
@@ -81,6 +102,9 @@ Deployed/used functions:
 - `stripe-webhook`
 - `create-connect-account`
 - `create-connect-checkout-session`
+- `queue-youtube-analysis`
+- `openclaw-pull-jobs`
+- `openclaw-push-insights`
 
 Deploy manually:
 
@@ -91,6 +115,9 @@ supabase functions deploy create-checkout-session
 supabase functions deploy stripe-webhook
 supabase functions deploy create-connect-account
 supabase functions deploy create-connect-checkout-session
+supabase functions deploy queue-youtube-analysis
+supabase functions deploy openclaw-pull-jobs
+supabase functions deploy openclaw-push-insights
 ```
 
 ## Required Supabase Function Secrets
@@ -103,7 +130,6 @@ supabase functions deploy create-connect-checkout-session
 ### Anyway
 
 - `ANYWAY_TRACE_BASE_URL` (for UI trace links)
-- `ANYWAY_PROJECT_ID` (optional)
 - `ANYWAY_API_URL` (optional event endpoint)
 - `ANYWAY_API_KEY` (optional)
 
@@ -113,6 +139,17 @@ supabase functions deploy create-connect-checkout-session
 - `STRIPE_WEBHOOK_SECRET`
 - `STRIPE_STARTER_PRICE_ID`
 - `STRIPE_PRO_PRICE_ID`
+
+### OpenClaw Bridge
+
+- `OPENCLAW_SERVICE_TOKEN`
+
+## Stripe Connect MVP (Plain Language)
+
+This app has two Stripe paths:
+
+- `Subscriptions`: user plan billing (`Starter`, `Pro`).
+- `Connect MVP`: demo marketplace-style payment split where part of a one-time payment is kept as platform fee and the remainder is transferred to a connected destination account.
 
 ## Stripe Webhook
 

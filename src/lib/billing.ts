@@ -25,7 +25,7 @@ export const PLANS: PlanConfig[] = [
     price: "£25",
     period: "/month",
     envVar: "VITE_STRIPE_PRO_PRICE_ID",
-    features: ["50 pipeline runs/month", "All artifact types", "Priority support", "Advanced analytics", "API access"],
+    features: ["50 pipeline runs/month", "All artifact types", "Thumbnail prompt + brief output", "Priority support", "Advanced analytics", "API access"],
     recommended: true,
   },
 ];

@@ -30,6 +30,18 @@ interface RunRow {
   model: string | null;
   error_message: string | null;
   agent_metrics: AgentMetric[] | null;
+  memory_applied: Array<{
+    agent: string;
+    memory_rows: Array<{ id: string; key: string; priority: number }>;
+    feedback_rows: Array<{ id: string; reason_code: string; feedback_weight: number }>;
+  }> | null;
+  collector_export_status: string | null;
+  collector_export_error: string | null;
+  quality_delta: {
+    previous_score: number | null;
+    current_score: number | null;
+    delta_score: number | null;
+  } | null;
 }
 
 export default function Observability() {
@@ -147,6 +159,18 @@ export default function Observability() {
                             <span className="text-xs text-muted-foreground">
                               {metrics.length} agents · {(totalLatency / 1000).toFixed(2)}s
                             </span>
+                            <span className="text-xs text-muted-foreground">
+                              Export: {run.collector_export_status ?? "n/a"}
+                            </span>
+                            {Array.isArray(run.memory_applied) && (
+                              <span className="text-xs text-muted-foreground">
+                                Memory refs:{" "}
+                                {run.memory_applied.reduce(
+                                  (sum, item) => sum + item.memory_rows.length + item.feedback_rows.length,
+                                  0,
+                                )}
+                              </span>
+                            )}
                             {failedCount > 0 && <span className="text-xs text-destructive">{failedCount} failed</span>}
                           </div>
                         </div>
@@ -178,6 +202,17 @@ export default function Observability() {
                       )}
 
                       {run.error_message && <p className="text-xs text-destructive mt-2">{run.error_message}</p>}
+                      {run.collector_export_error && (
+                        <p className="text-xs text-amber-600 mt-2">Collector export issue: {run.collector_export_error}</p>
+                      )}
+                      {run.quality_delta?.current_score !== null && run.quality_delta?.current_score !== undefined && (
+                        <p className="text-xs text-muted-foreground mt-2">
+                          Quality score: {run.quality_delta.current_score}
+                          {run.quality_delta.delta_score !== null && run.quality_delta.delta_score !== undefined
+                            ? ` (${run.quality_delta.delta_score >= 0 ? "+" : ""}${run.quality_delta.delta_score} vs previous)`
+                            : ""}
+                        </p>
+                      )}
                     </div>
                   );
                 })}

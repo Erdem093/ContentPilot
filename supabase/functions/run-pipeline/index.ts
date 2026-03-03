@@ -2,7 +2,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeaders, jsonResponse } from "../_shared/cors.ts";
 
 const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") ?? "gpt-4.1-mini";
-const AGENT_VERSION = "v1";
+const AGENT_VERSION = "v2";
 const SERVICE_NAME = "studio-mind-run-pipeline";
 
 type AgentName = "HookAgent" | "ScriptAgent" | "TitleAgent" | "StrategyAgent";
@@ -12,6 +12,7 @@ type AgentDefinition = {
   name: AgentName;
   artifactType: ArtifactType;
   systemPrompt: string;
+  qualityChecklist: string[];
 };
 
 type RunContext = {
@@ -20,7 +21,8 @@ type RunContext = {
   videoId: string;
   title: string;
   description: string | null;
-  memorySummary: string;
+  isPro: boolean;
+  memoryByAgent: Record<AgentName, CompiledMemory>;
 };
 
 type AgentOutput = {
@@ -55,6 +57,39 @@ type SpanRecord = {
   attributes: SpanAttr[];
 };
 
+type MemoryRow = {
+  id: string;
+  key: string;
+  value: Record<string, unknown>;
+  source: string;
+  video_id: string | null;
+  agent_name: string | null;
+  priority: number;
+  updated_at: string;
+};
+
+type FeedbackRow = {
+  id: string;
+  reason_code: string;
+  free_text: string | null;
+  agent_name: string | null;
+  applies_globally: boolean;
+  feedback_weight: number;
+  created_at: string;
+  video_id: string;
+};
+
+type CompiledMemory = {
+  constraintsText: string;
+  appliedMemoryRows: Array<{ id: string; key: string; priority: number }>;
+  appliedFeedbackRows: Array<{ id: string; reason_code: string; feedback_weight: number }>;
+};
+
+type ExportResult = {
+  status: "success" | "failed" | "skipped";
+  error: string | null;
+};
+
 const MODEL_PRICING_PER_1M: Record<string, { input: number; output: number }> = {
   "gpt-4.1-mini": { input: 0.4, output: 1.6 },
   "gpt-4.1": { input: 2.0, output: 8.0 },
@@ -66,25 +101,45 @@ const AGENTS: AgentDefinition[] = [
     name: "HookAgent",
     artifactType: "hook",
     systemPrompt:
-      "You are HookAgent. Generate 3 short, highly clickable opening hook options for a social video. Keep outputs concise and specific.",
+      "You are HookAgent. Generate concise, high-retention opening hooks for social video content.",
+    qualityChecklist: [
+      "Keep lines punchy and specific",
+      "Avoid generic clickbait filler",
+      "Favor concrete value proposition in first sentence",
+    ],
   },
   {
     name: "ScriptAgent",
     artifactType: "script",
     systemPrompt:
-      "You are ScriptAgent. Generate a practical creator-ready short video script with intro, body beats, and outro CTA.",
+      "You are ScriptAgent. Write creator-ready short-form scripts with a clear beginning, beats, and close.",
+    qualityChecklist: [
+      "Keep pacing fast and readable",
+      "Use short lines and clear transitions",
+      "End with a direct CTA",
+    ],
   },
   {
     name: "TitleAgent",
     artifactType: "title",
     systemPrompt:
-      "You are TitleAgent. Generate title options and one thumbnail text concept optimized for CTR.",
+      "You are TitleAgent. Craft high-CTR title options and thumbnail direction that fit the audience and topic.",
+    qualityChecklist: [
+      "Titles must be clear and not misleading",
+      "Prioritize curiosity with specificity",
+      "Thumbnail direction must be visually concrete",
+    ],
   },
   {
     name: "StrategyAgent",
     artifactType: "strategy",
     systemPrompt:
-      "You are StrategyAgent. Generate platform strategy notes: audience angle, retention tactic, and posting guidance.",
+      "You are StrategyAgent. Provide practical publishing and retention strategy for creator growth.",
+    qualityChecklist: [
+      "Recommend one measurable retention tactic",
+      "Recommend one posting optimization",
+      "Tailor guidance to the provided topic",
+    ],
   },
 ];
 
@@ -119,12 +174,12 @@ function normalizeCollectorUrl(raw: string | undefined): string | null {
   return `${trimmed}/v1/traces`;
 }
 
-async function exportTrace(traceId: string, spans: SpanRecord[], runId: string) {
+async function exportTrace(traceId: string, spans: SpanRecord[], runId: string): Promise<ExportResult> {
   const apiKey = Deno.env.get("ANYWAY_API_KEY");
   const collector = normalizeCollectorUrl(Deno.env.get("ANYWAY_API_URL") ?? "https://collector.anyway.sh");
 
   if (!apiKey || !collector || spans.length === 0) {
-    return;
+    return { status: "skipped", error: null };
   }
 
   const payload = {
@@ -163,16 +218,26 @@ async function exportTrace(traceId: string, spans: SpanRecord[], runId: string) 
     ],
   };
 
-  await fetch(collector, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: apiKey,
-    },
-    body: JSON.stringify(payload),
-  }).catch(() => {
-    // Observability export is best-effort and must never fail the pipeline.
-  });
+  try {
+    const response = await fetch(collector, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: apiKey,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "Failed to read collector response");
+      return { status: "failed", error: `Collector returned ${response.status}: ${text.slice(0, 300)}` };
+    }
+
+    return { status: "success", error: null };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Collector export failed";
+    return { status: "failed", error: message };
+  }
 }
 
 function estimateCostUsd(model: string, promptTokens: number, completionTokens: number): number {
@@ -194,75 +259,171 @@ function buildTrace(): { traceId: string; traceUrl: string | null } {
   return { traceId, traceUrl: `${normalizedBase}/traces/${traceId}` };
 }
 
-async function loadMemory(
-  adminClient: ReturnType<typeof createClient>,
-  userId: string,
-  videoId: string,
-): Promise<string> {
-  const [{ data: memoryRows }, { data: feedbackRows }] = await Promise.all([
-    adminClient
-      .from("agent_memory")
-      .select("key, value, source, video_id, updated_at")
-      .eq("user_id", userId)
-      .or(`video_id.eq.${videoId},video_id.is.null`)
-      .order("updated_at", { ascending: false })
-      .limit(10),
-    adminClient
-      .from("run_feedback")
-      .select("reason_code, free_text, created_at")
-      .eq("user_id", userId)
-      .eq("video_id", videoId)
-      .order("created_at", { ascending: false })
-      .limit(5),
-  ]);
-
-  const memorySummary = (memoryRows || [])
-    .map((row) => {
-      const scoped = row.video_id ? "video" : "global";
-      return `[${row.source}/${scoped}] ${row.key}: ${JSON.stringify(row.value)}`;
-    })
-    .join("\n");
-
-  const feedbackSummary = (feedbackRows || [])
-    .map((row) => `[feedback] ${row.reason_code}${row.free_text ? ` - ${row.free_text}` : ""}`)
-    .join("\n");
-
-  const combined = [memorySummary, feedbackSummary].filter(Boolean).join("\n");
-  return combined || "No prior memory available.";
-}
-
-async function upsertMemory(
-  adminClient: ReturnType<typeof createClient>,
-  userId: string,
-  videoId: string,
-  key: string,
-  value: Record<string, unknown>,
-  source: string,
-) {
-  const { data: existing } = await adminClient
-    .from("agent_memory")
-    .select("id")
-    .eq("user_id", userId)
-    .eq("video_id", videoId)
-    .eq("key", key)
-    .limit(1)
-    .maybeSingle();
-
-  if (existing?.id) {
-    await adminClient
-      .from("agent_memory")
-      .update({ value, source, updated_at: new Date().toISOString() })
-      .eq("id", existing.id);
-    return;
+function memoryValueToText(value: Record<string, unknown>): string {
+  if (typeof value.latest_free_text === "string" && value.latest_free_text.trim()) {
+    return value.latest_free_text.trim();
   }
 
-  await adminClient.from("agent_memory").insert({
-    user_id: userId,
-    video_id: videoId,
-    key,
-    value,
-    source,
+  if (Array.isArray(value.examples) && value.examples.length > 0) {
+    const latest = value.examples[value.examples.length - 1] as Record<string, unknown>;
+    if (typeof latest.free_text === "string" && latest.free_text.trim()) {
+      return latest.free_text.trim();
+    }
+  }
+
+  return JSON.stringify(value);
+}
+
+function reasonToConstraint(reasonCode: string): string {
+  if (reasonCode === "too_long") return "Keep output shorter and remove filler language.";
+  if (reasonCode === "not_engaging") return "Increase specificity, novelty, and practical payoff in the opening.";
+  if (reasonCode === "wrong_tone") return "Adjust tone to match user preference and audience context.";
+  if (reasonCode === "poor_hook") return "Strengthen first line hook with sharper tension or curiosity.";
+  return "Address the user-provided rejection notes directly.";
+}
+
+function compileAgentMemory(
+  agent: AgentName,
+  videoId: string,
+  memoryRows: MemoryRow[],
+  feedbackRows: FeedbackRow[],
+): CompiledMemory {
+  const inOrderMemory = [
+    ...memoryRows
+      .filter((row) => row.agent_name === agent && row.video_id === videoId)
+      .sort((a, b) => b.priority - a.priority || new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()),
+    ...memoryRows
+      .filter((row) => row.agent_name === agent && row.video_id === null)
+      .sort((a, b) => b.priority - a.priority || new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()),
+    ...memoryRows
+      .filter((row) => row.agent_name === null && row.video_id === videoId)
+      .sort((a, b) => b.priority - a.priority || new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()),
+    ...memoryRows
+      .filter((row) => row.agent_name === null && row.video_id === null)
+      .sort((a, b) => b.priority - a.priority || new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()),
+  ].slice(0, 12);
+
+  const scopedFeedback = feedbackRows
+    .filter((row) => {
+      const agentMatches = row.agent_name === agent;
+      const globalMatch = row.applies_globally || row.agent_name === null;
+      const videoMatches = row.video_id === videoId || row.applies_globally;
+      return (agentMatches || globalMatch) && videoMatches;
+    })
+    .sort((a, b) => b.feedback_weight - a.feedback_weight || new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, 8);
+
+  const hardConstraints = scopedFeedback.map((feedback) => {
+    const base = reasonToConstraint(feedback.reason_code);
+    if (feedback.free_text) return `${base} User note: ${feedback.free_text}`;
+    return base;
   });
+
+  const stylePreferences = inOrderMemory
+    .filter((row) => row.key.includes("preference") || row.key.includes("tone") || row.key.includes("style") || row.key.includes("length"))
+    .map((row) => `${row.key}: ${memoryValueToText(row.value)}`)
+    .slice(0, 6);
+
+  const recentFailures = scopedFeedback
+    .slice(0, 5)
+    .map((row) => `${row.reason_code}${row.free_text ? ` - ${row.free_text}` : ""} (weight ${row.feedback_weight})`);
+
+  const constraints = [
+    "CONSTRAINTS",
+    `Hard constraints:\n${hardConstraints.length ? hardConstraints.map((line) => `- ${line}`).join("\n") : "- None"}`,
+    `Style preferences:\n${stylePreferences.length ? stylePreferences.map((line) => `- ${line}`).join("\n") : "- None"}`,
+    `Recent failure reasons:\n${recentFailures.length ? recentFailures.map((line) => `- ${line}`).join("\n") : "- None"}`,
+  ].join("\n\n");
+
+  return {
+    constraintsText: constraints,
+    appliedMemoryRows: inOrderMemory.map((row) => ({ id: row.id, key: row.key, priority: row.priority })),
+    appliedFeedbackRows: scopedFeedback.map((row) => ({
+      id: row.id,
+      reason_code: row.reason_code,
+      feedback_weight: row.feedback_weight,
+    })),
+  };
+}
+
+async function loadCompiledMemory(
+  adminClient: ReturnType<typeof createClient>,
+  userId: string,
+  videoId: string,
+): Promise<Record<AgentName, CompiledMemory>> {
+  const [{ data: memoryData }, { data: feedbackData }] = await Promise.all([
+    adminClient
+      .from("agent_memory")
+      .select("id, key, value, source, video_id, agent_name, priority, updated_at")
+      .eq("user_id", userId)
+      .or(`video_id.eq.${videoId},video_id.is.null`)
+      .order("priority", { ascending: false })
+      .order("updated_at", { ascending: false })
+      .limit(100),
+    adminClient
+      .from("run_feedback")
+      .select("id, reason_code, free_text, agent_name, applies_globally, feedback_weight, created_at, video_id")
+      .eq("user_id", userId)
+      .or(`video_id.eq.${videoId},applies_globally.eq.true`)
+      .order("feedback_weight", { ascending: false })
+      .order("created_at", { ascending: false })
+      .limit(50),
+  ]);
+
+  const rows = ((memoryData || []) as unknown[]).map((item) => {
+    const row = item as Record<string, unknown>;
+    return {
+      id: String(row.id),
+      key: String(row.key),
+      value: (row.value ?? {}) as Record<string, unknown>,
+      source: String(row.source ?? "unknown"),
+      video_id: (row.video_id as string | null) ?? null,
+      agent_name: (row.agent_name as string | null) ?? null,
+      priority: Number(row.priority ?? 1),
+      updated_at: String(row.updated_at ?? new Date(0).toISOString()),
+    } as MemoryRow;
+  });
+
+  const feedbackRows = ((feedbackData || []) as unknown[]).map((item) => {
+    const row = item as Record<string, unknown>;
+    return {
+      id: String(row.id),
+      reason_code: String(row.reason_code),
+      free_text: (row.free_text as string | null) ?? null,
+      agent_name: (row.agent_name as string | null) ?? null,
+      applies_globally: Boolean(row.applies_globally),
+      feedback_weight: Number(row.feedback_weight ?? 1),
+      created_at: String(row.created_at ?? new Date(0).toISOString()),
+      video_id: String(row.video_id),
+    } as FeedbackRow;
+  });
+
+  return {
+    HookAgent: compileAgentMemory("HookAgent", videoId, rows, feedbackRows),
+    ScriptAgent: compileAgentMemory("ScriptAgent", videoId, rows, feedbackRows),
+    TitleAgent: compileAgentMemory("TitleAgent", videoId, rows, feedbackRows),
+    StrategyAgent: compileAgentMemory("StrategyAgent", videoId, rows, feedbackRows),
+  };
+}
+
+function formatTitleAgentContent(parsed: Record<string, unknown>, isPro: boolean): string {
+  const title = typeof parsed.title === "string" ? parsed.title.trim() : "";
+  const thumbnailBrief = typeof parsed.thumbnail_brief === "string" ? parsed.thumbnail_brief.trim() : "";
+  const imagePrompt = typeof parsed.image_prompt === "string" ? parsed.image_prompt.trim() : "";
+  const fallbackContent = typeof parsed.content === "string" ? parsed.content.trim() : "";
+
+  if (!title && fallbackContent) return fallbackContent;
+
+  const lines = [
+    `Title:\n${title || "(not provided)"}`,
+    `Thumbnail Brief:\n${thumbnailBrief || "(not provided)"}`,
+  ];
+
+  if (isPro) {
+    lines.push(`Image Prompt:\n${imagePrompt || "(not provided)"}`);
+  }
+
+  return lines.join("\n\n");
 }
 
 async function callAgent(
@@ -270,13 +431,22 @@ async function callAgent(
   agent: AgentDefinition,
   context: RunContext,
 ): Promise<AgentOutput> {
+  const compiled = context.memoryByAgent[agent.name];
+
+  const taskSection = agent.name === "TitleAgent"
+    ? context.isPro
+      ? "Return JSON exactly: {\"title\":\"...\",\"thumbnail_brief\":\"...\",\"image_prompt\":\"...\"}."
+      : "Return JSON exactly: {\"title\":\"...\",\"thumbnail_brief\":\"...\"}."
+    : "Return JSON exactly: {\"content\":\"...\"}.";
+
   const userPrompt = [
     `Video Title: ${context.title}`,
     `Video Description: ${context.description ?? "(none)"}`,
-    "\nMemory and feedback context:",
-    context.memorySummary,
-    "\nReturn JSON with this exact shape: {\"content\": \"...\"}.",
-  ].join("\n");
+    compiled.constraintsText,
+    `TASK\nGenerate ${agent.artifactType} output for this video.`,
+    `QUALITY CHECKLIST\n${agent.qualityChecklist.map((line) => `- ${line}`).join("\n")}`,
+    taskSection,
+  ].join("\n\n");
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -286,12 +456,12 @@ async function callAgent(
     },
     body: JSON.stringify({
       model: OPENAI_MODEL,
-      temperature: 0.7,
+      temperature: 0.65,
       response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
-          content: `${agent.systemPrompt} You are part of a multi-agent swarm orchestrated for creator workflows.`,
+          content: `${agent.systemPrompt} You are part of a 4+1 orchestrated agent system with strict output contracts.`,
         },
         {
           role: "user",
@@ -312,8 +482,13 @@ async function callAgent(
     throw new Error(`${agent.name} missing JSON content`);
   }
 
-  const parsed = JSON.parse(rawContent) as { content?: string };
-  const content = parsed.content?.trim();
+  const parsed = JSON.parse(rawContent) as Record<string, unknown>;
+  const content = agent.name === "TitleAgent"
+    ? formatTitleAgentContent(parsed, context.isPro)
+    : typeof parsed.content === "string"
+    ? parsed.content.trim()
+    : "";
+
   if (!content) {
     throw new Error(`${agent.name} returned empty content`);
   }
@@ -323,6 +498,88 @@ async function callAgent(
     promptTokens: Number(json?.usage?.prompt_tokens ?? 0),
     completionTokens: Number(json?.usage?.completion_tokens ?? 0),
     totalTokens: Number(json?.usage?.total_tokens ?? 0),
+  };
+}
+
+async function upsertMemory(
+  adminClient: ReturnType<typeof createClient>,
+  userId: string,
+  videoId: string,
+  key: string,
+  value: Record<string, unknown>,
+  source: string,
+) {
+  const { data: existing } = await adminClient
+    .from("agent_memory")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("video_id", videoId)
+    .eq("key", key)
+    .is("agent_name", null)
+    .limit(1)
+    .maybeSingle();
+
+  if (existing?.id) {
+    await adminClient
+      .from("agent_memory")
+      .update({ value, source, updated_at: new Date().toISOString() })
+      .eq("id", existing.id);
+    return;
+  }
+
+  await adminClient.from("agent_memory").insert({
+    user_id: userId,
+    video_id: videoId,
+    key,
+    value,
+    source,
+    agent_name: null,
+    priority: 1,
+  });
+}
+
+function countWords(content: string): number {
+  const normalized = content.trim();
+  if (!normalized) return 0;
+  return normalized.split(/\s+/).filter(Boolean).length;
+}
+
+function computeQualityDelta(
+  artifacts: Array<{ type: ArtifactType; content: string }>,
+  previousScore: number | null,
+): Record<string, unknown> {
+  const hook = artifacts.find((item) => item.type === "hook")?.content ?? "";
+  const script = artifacts.find((item) => item.type === "script")?.content ?? "";
+
+  const hookWords = countWords(hook);
+  const scriptWords = countWords(script);
+
+  const hookWithinLimit = hookWords > 0 && hookWords <= 16;
+  const scriptWithinRange = scriptWords >= 80 && scriptWords <= 220;
+
+  const bannedPhrases = ["smash that like", "don\u2019t forget to like and subscribe", "click the link in bio"];
+  const lowerScript = script.toLowerCase();
+  const bannedPhraseHits = bannedPhrases.reduce((sum, phrase) => {
+    if (!lowerScript.includes(phrase)) return sum;
+    return sum + 1;
+  }, 0);
+
+  let score = 0;
+  if (hookWithinLimit) score += 35;
+  if (scriptWithinRange) score += 35;
+  score += Math.max(0, 30 - bannedPhraseHits * 10);
+
+  return {
+    previous_score: previousScore,
+    current_score: score,
+    delta_score: previousScore === null ? null : score - previousScore,
+    checks: {
+      hook_words: hookWords,
+      hook_within_limit: hookWithinLimit,
+      script_words: scriptWords,
+      script_within_range: scriptWithinRange,
+      banned_phrase_hits: bannedPhraseHits,
+    },
   };
 }
 
@@ -368,16 +625,22 @@ Deno.serve(async (req) => {
     return jsonResponse(400, { error: "videoId is required" });
   }
 
-  const { data: video, error: videoError } = await userClient
-    .from("videos")
-    .select("id, title, description")
-    .eq("id", videoId)
-    .eq("user_id", user.id)
-    .single();
+  const [{ data: video, error: videoError }, { data: profile }] = await Promise.all([
+    userClient
+      .from("videos")
+      .select("id, title, description")
+      .eq("id", videoId)
+      .eq("user_id", user.id)
+      .single(),
+    userClient.from("profiles").select("stripe_price_id").eq("user_id", user.id).maybeSingle(),
+  ]);
 
   if (videoError || !video) {
     return jsonResponse(404, { error: "Video not found" });
   }
+
+  const proPriceId = Deno.env.get("STRIPE_PRO_PRICE_ID") ?? "";
+  const isPro = Boolean(proPriceId && profile?.stripe_price_id && profile.stripe_price_id === proPriceId);
 
   let runId: string | null = null;
   const trace = buildTrace();
@@ -386,6 +649,9 @@ Deno.serve(async (req) => {
 
   const rootSpanId = randomHex(8);
   const rootStart = nowNano();
+
+  let compiledMemoryMap: Record<AgentName, CompiledMemory> | null = null;
+  let collectorStatus: ExportResult = { status: "skipped", error: null };
 
   try {
     const { data: run, error: runInsertError } = await adminClient
@@ -407,7 +673,13 @@ Deno.serve(async (req) => {
 
     runId = run.id;
 
-    const memorySummary = await loadMemory(adminClient, user.id, video.id);
+    compiledMemoryMap = await loadCompiledMemory(adminClient, user.id, video.id);
+
+    const memoryApplied = AGENTS.map((agent) => ({
+      agent: agent.name,
+      memory_rows: compiledMemoryMap?.[agent.name].appliedMemoryRows ?? [],
+      feedback_rows: compiledMemoryMap?.[agent.name].appliedFeedbackRows ?? [],
+    }));
 
     const context: RunContext = {
       userId: user.id,
@@ -415,10 +687,11 @@ Deno.serve(async (req) => {
       videoId: video.id,
       title: video.title,
       description: video.description,
-      memorySummary,
+      isPro,
+      memoryByAgent: compiledMemoryMap,
     };
 
-    const artifactRows: Array<{ run_id: string; user_id: string; type: string; content: string; agent_name: string; agent_version: string }> = [];
+    const artifactRows: Array<{ run_id: string; user_id: string; type: ArtifactType; content: string; agent_name: string; agent_version: string }> = [];
 
     for (const agent of AGENTS) {
       const spanId = randomHex(8);
@@ -516,6 +789,26 @@ Deno.serve(async (req) => {
     const totalTokens = metrics.reduce((sum, item) => sum + item.total_tokens, 0);
     const totalCostUsd = Number(metrics.reduce((sum, item) => sum + item.cost_usd, 0).toFixed(4));
 
+    const { data: previousRun } = await adminClient
+      .from("runs")
+      .select("quality_delta")
+      .eq("user_id", user.id)
+      .eq("video_id", video.id)
+      .not("quality_delta", "is", null)
+      .neq("id", runId)
+      .order("started_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const previousScore = typeof previousRun?.quality_delta === "object" && previousRun.quality_delta !== null
+      ? Number((previousRun.quality_delta as Record<string, unknown>).current_score ?? NaN)
+      : null;
+
+    const qualityDelta = computeQualityDelta(
+      artifactRows.map((row) => ({ type: row.type, content: row.content })),
+      Number.isFinite(previousScore) ? previousScore : null,
+    );
+
     await upsertMemory(
       adminClient,
       user.id,
@@ -525,28 +818,24 @@ Deno.serve(async (req) => {
         title: video.title,
         generated_agents: AGENTS.map((agent) => agent.name),
         generated_at: new Date().toISOString(),
-        note: "Last run completed successfully.",
+        quality_score: qualityDelta.current_score,
       },
       "run_summary",
     );
 
-    const { error: runUpdateError } = await adminClient
-      .from("runs")
-      .update({
-        status: "completed",
-        completed_at: new Date().toISOString(),
-        cost_tokens: totalTokens,
-        cost_usd: totalCostUsd,
-        model: OPENAI_MODEL,
-        trace_id: trace.traceId,
-        trace_url: trace.traceUrl,
-        error_message: null,
-        agent_metrics: metrics,
-      })
-      .eq("id", runId);
+    const appliedMemoryIds = Array.from(
+      new Set(
+        AGENTS.flatMap((agent) => [
+          ...(compiledMemoryMap?.[agent.name].appliedMemoryRows.map((row) => row.id) ?? []),
+        ]),
+      ),
+    );
 
-    if (runUpdateError) {
-      throw new Error(`Run update failed: ${runUpdateError.message}`);
+    if (appliedMemoryIds.length > 0) {
+      await adminClient
+        .from("agent_memory")
+        .update({ last_applied_at: new Date().toISOString() })
+        .in("id", appliedMemoryIds);
     }
 
     spanRecords.push({
@@ -566,7 +855,30 @@ Deno.serve(async (req) => {
       ],
     });
 
-    await exportTrace(trace.traceId, spanRecords, runId);
+    collectorStatus = await exportTrace(trace.traceId, spanRecords, runId);
+
+    const { error: runUpdateError } = await adminClient
+      .from("runs")
+      .update({
+        status: "completed",
+        completed_at: new Date().toISOString(),
+        cost_tokens: totalTokens,
+        cost_usd: totalCostUsd,
+        model: OPENAI_MODEL,
+        trace_id: trace.traceId,
+        trace_url: trace.traceUrl,
+        error_message: null,
+        agent_metrics: metrics,
+        memory_applied: memoryApplied,
+        quality_delta: qualityDelta,
+        collector_export_status: collectorStatus.status,
+        collector_export_error: collectorStatus.error,
+      })
+      .eq("id", runId);
+
+    if (runUpdateError) {
+      throw new Error(`Run update failed: ${runUpdateError.message}`);
+    }
 
     return jsonResponse(200, {
       runId,
@@ -579,19 +891,6 @@ Deno.serve(async (req) => {
     const message = error instanceof Error ? error.message : "Unknown error";
 
     if (runId) {
-      await adminClient
-        .from("runs")
-        .update({
-          status: "failed",
-          completed_at: new Date().toISOString(),
-          error_message: message,
-          trace_id: trace.traceId,
-          trace_url: trace.traceUrl,
-          model: OPENAI_MODEL,
-          agent_metrics: metrics,
-        })
-        .eq("id", runId);
-
       spanRecords.push({
         spanId: rootSpanId,
         name: "content_generation_pipeline",
@@ -609,7 +908,29 @@ Deno.serve(async (req) => {
         ],
       });
 
-      await exportTrace(trace.traceId, spanRecords, runId);
+      collectorStatus = await exportTrace(trace.traceId, spanRecords, runId);
+
+      await adminClient
+        .from("runs")
+        .update({
+          status: "failed",
+          completed_at: new Date().toISOString(),
+          error_message: message,
+          trace_id: trace.traceId,
+          trace_url: trace.traceUrl,
+          model: OPENAI_MODEL,
+          agent_metrics: metrics,
+          memory_applied: compiledMemoryMap
+            ? AGENTS.map((agent) => ({
+              agent: agent.name,
+              memory_rows: compiledMemoryMap?.[agent.name].appliedMemoryRows ?? [],
+              feedback_rows: compiledMemoryMap?.[agent.name].appliedFeedbackRows ?? [],
+            }))
+            : null,
+          collector_export_status: collectorStatus.status,
+          collector_export_error: collectorStatus.error,
+        })
+        .eq("id", runId);
     }
 
     return jsonResponse(500, {

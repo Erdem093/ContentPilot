@@ -24,9 +24,11 @@ Highlight that each artifact is produced by a specialized agent.
 
 ## 3. Memory + Cognition (1.5m)
 
-- On run detail, click `Why I didn't like this`.
-- Submit a reason (e.g. `wrong_tone`) + custom text.
-- Trigger another run and explain memory-guided improvement.
+- On run detail, submit artifact-targeted feedback (e.g. ScriptAgent -> `too_long` + custom note).
+- Trigger another run and call out:
+  - shorter script structure
+  - `memory_applied` references visible in observability
+  - updated quality score (`quality_delta`)
 
 ## 4. Anyway Observability (1.5m)
 
@@ -36,6 +38,7 @@ Highlight that each artifact is produced by a specialized agent.
   - latency
   - cost
   - failures (if any)
+  - collector export status
 
 Narrative: "Every agent step is measurable and production-observable."
 

@@ -226,6 +226,9 @@ export default function Billing() {
             <CardDescription>Commercialization demo with application fee and destination transfer</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="rounded-md border p-3 text-xs text-muted-foreground">
+              Subscriptions are your product plans. Connect demo is a separate marketplace-style payment split flow.
+            </div>
             <div className="flex items-center gap-2">
               <LinkIcon className="h-4 w-4 text-muted-foreground" />
               <span className="text-sm text-muted-foreground">Connect account status:</span>
@@ -244,7 +247,7 @@ export default function Billing() {
                 {connectLoading === "checkout" ? "Opening..." : "Pay with platform fee (demo)"}
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground">Default demo payment: £10 with £2 platform fee via Stripe Connect.</p>
+            <p className="text-xs text-muted-foreground">Example split: £10 payment -&gt; £2 platform fee -&gt; £8 destination account.</p>
           </CardContent>
         </Card>
 

@@ -12,6 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 
 interface ArtifactRow {
   id: string;
@@ -58,6 +59,8 @@ export default function RunDetail() {
   const [feedbackReason, setFeedbackReason] = useState<string>("not_engaging");
   const [feedbackText, setFeedbackText] = useState("");
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string>("run");
+  const [appliesGlobally, setAppliesGlobally] = useState(true);
 
   const fetchData = async () => {
     if (!runId) return;
@@ -95,11 +98,14 @@ export default function RunDetail() {
     if (!runId) return;
 
     setFeedbackSubmitting(true);
+    const artifactId = selectedArtifactId === "run" ? undefined : selectedArtifactId;
     const { data, error } = await supabase.functions.invoke("submit-run-feedback", {
       body: {
         runId,
+        artifactId,
         reasonCode: feedbackReason,
         freeText: feedbackText.trim() || undefined,
+        appliesGlobally: appliesGlobally || !artifactId,
       },
     });
 
@@ -116,8 +122,16 @@ export default function RunDetail() {
     toast({ title: "Feedback saved", description: "Future runs will use this memory." });
     setFeedbackText("");
     setFeedbackReason("not_engaging");
+    setSelectedArtifactId("run");
+    setAppliesGlobally(true);
     setFeedbackDialogOpen(false);
     setFeedbackSubmitting(false);
+  };
+
+  const openFeedbackDialog = (artifactId?: string) => {
+    setSelectedArtifactId(artifactId ?? "run");
+    setAppliesGlobally(!artifactId);
+    setFeedbackDialogOpen(true);
   };
 
   const statusBadge = (status: string) => {
@@ -167,7 +181,7 @@ export default function RunDetail() {
               {run.cost_usd && <span>${Number(run.cost_usd).toFixed(4)}</span>}
             </div>
           </div>
-          <Button variant="outline" onClick={() => setFeedbackDialogOpen(true)}>
+          <Button variant="outline" onClick={() => openFeedbackDialog()}>
             <MessageSquareWarning className="mr-2 h-4 w-4" />Why I didn't like this
           </Button>
         </div>
@@ -211,6 +225,12 @@ export default function RunDetail() {
                       )}
                     </div>
                     <p className="text-sm whitespace-pre-wrap">{art.content || "No content"}</p>
+                    <div className="mt-4">
+                      <Button size="sm" variant="ghost" onClick={() => openFeedbackDialog(art.id)}>
+                        <MessageSquareWarning className="mr-2 h-3.5 w-3.5" />
+                        Give feedback for this artifact
+                      </Button>
+                    </div>
                   </CardContent>
                 </Card>
               ))}
@@ -234,6 +254,28 @@ export default function RunDetail() {
           </DialogHeader>
           <div className="space-y-4 pt-2">
             <div className="space-y-2">
+              <Label>Feedback target</Label>
+              <Select
+                value={selectedArtifactId}
+                onValueChange={(value) => {
+                  setSelectedArtifactId(value);
+                  if (value === "run") setAppliesGlobally(true);
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose target" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="run">Entire run (global preference)</SelectItem>
+                  {artifacts.map((artifact) => (
+                    <SelectItem key={artifact.id} value={artifact.id}>
+                      {(TYPE_LABELS[artifact.type] || artifact.type) + (artifact.agent_name ? ` - ${artifact.agent_name}` : "")}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
               <Label>Feedback reason</Label>
               <Select value={feedbackReason} onValueChange={setFeedbackReason}>
                 <SelectTrigger>
@@ -254,6 +296,19 @@ export default function RunDetail() {
                 placeholder="Example: Keep hooks below 10 words and avoid clickbait phrasing."
                 value={feedbackText}
                 onChange={(event) => setFeedbackText(event.target.value)}
+              />
+            </div>
+            <div className="flex items-center justify-between rounded-md border p-3">
+              <div>
+                <p className="text-sm font-medium">Apply globally across future runs</p>
+                <p className="text-xs text-muted-foreground">When off, memory is targeted to the selected artifact agent.</p>
+              </div>
+              <Switch
+                checked={appliesGlobally}
+                onCheckedChange={(checked) => {
+                  setAppliesGlobally(checked);
+                  if (checked) setSelectedArtifactId("run");
+                }}
               />
             </div>
             <Button onClick={submitFeedback} disabled={feedbackSubmitting} className="w-full">

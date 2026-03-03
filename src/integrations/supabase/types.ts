@@ -61,10 +61,57 @@ export type Database = {
           },
         ]
       }
+      analysis_jobs: {
+        Row: {
+          created_at: string
+          id: string
+          payload: Json
+          source: string
+          status: string
+          updated_at: string
+          user_id: string
+          video_id: string | null
+          worker_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          payload?: Json
+          source: string
+          status?: string
+          updated_at?: string
+          user_id: string
+          video_id?: string | null
+          worker_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          payload?: Json
+          source?: string
+          status?: string
+          updated_at?: string
+          user_id?: string
+          video_id?: string | null
+          worker_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "analysis_jobs_video_id_fkey"
+            columns: ["video_id"]
+            isOneToOne: false
+            referencedRelation: "videos"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       agent_memory: {
         Row: {
+          agent_name: string | null
           id: string
           key: string
+          last_applied_at: string | null
+          priority: number
           source: string
           updated_at: string
           user_id: string
@@ -72,8 +119,11 @@ export type Database = {
           video_id: string | null
         }
         Insert: {
+          agent_name?: string | null
           id?: string
           key: string
+          last_applied_at?: string | null
+          priority?: number
           source: string
           updated_at?: string
           user_id: string
@@ -81,8 +131,11 @@ export type Database = {
           video_id?: string | null
         }
         Update: {
+          agent_name?: string | null
           id?: string
           key?: string
+          last_applied_at?: string | null
+          priority?: number
           source?: string
           updated_at?: string
           user_id?: string
@@ -113,6 +166,8 @@ export type Database = {
           subscription_status: string | null
           updated_at: string
           user_id: string
+          youtube_channel_id: string | null
+          youtube_connected_at: string | null
         }
         Insert: {
           avatar_url?: string | null
@@ -127,6 +182,8 @@ export type Database = {
           subscription_status?: string | null
           updated_at?: string
           user_id: string
+          youtube_channel_id?: string | null
+          youtube_connected_at?: string | null
         }
         Update: {
           avatar_url?: string | null
@@ -141,18 +198,24 @@ export type Database = {
           subscription_status?: string | null
           updated_at?: string
           user_id?: string
+          youtube_channel_id?: string | null
+          youtube_connected_at?: string | null
         }
         Relationships: []
       }
       runs: {
         Row: {
           agent_metrics: Json | null
+          collector_export_error: string | null
+          collector_export_status: string | null
           completed_at: string | null
           cost_tokens: number | null
           cost_usd: number | null
           error_message: string | null
           id: string
+          memory_applied: Json | null
           model: string | null
+          quality_delta: Json | null
           started_at: string
           status: string
           trace_id: string | null
@@ -162,12 +225,16 @@ export type Database = {
         }
         Insert: {
           agent_metrics?: Json | null
+          collector_export_error?: string | null
+          collector_export_status?: string | null
           completed_at?: string | null
           cost_tokens?: number | null
           cost_usd?: number | null
           error_message?: string | null
           id?: string
+          memory_applied?: Json | null
           model?: string | null
+          quality_delta?: Json | null
           started_at?: string
           status?: string
           trace_id?: string | null
@@ -177,12 +244,16 @@ export type Database = {
         }
         Update: {
           agent_metrics?: Json | null
+          collector_export_error?: string | null
+          collector_export_status?: string | null
           completed_at?: string | null
           cost_tokens?: number | null
           cost_usd?: number | null
           error_message?: string | null
           id?: string
+          memory_applied?: Json | null
           model?: string | null
+          quality_delta?: Json | null
           started_at?: string
           status?: string
           trace_id?: string | null
@@ -202,7 +273,11 @@ export type Database = {
       }
       run_feedback: {
         Row: {
+          agent_name: string | null
+          applies_globally: boolean
+          artifact_id: string | null
           created_at: string
+          feedback_weight: number
           free_text: string | null
           id: string
           reason_code: string
@@ -211,7 +286,11 @@ export type Database = {
           video_id: string
         }
         Insert: {
+          agent_name?: string | null
+          applies_globally?: boolean
+          artifact_id?: string | null
           created_at?: string
+          feedback_weight?: number
           free_text?: string | null
           id?: string
           reason_code: string
@@ -220,7 +299,11 @@ export type Database = {
           video_id: string
         }
         Update: {
+          agent_name?: string | null
+          applies_globally?: boolean
+          artifact_id?: string | null
           created_at?: string
+          feedback_weight?: number
           free_text?: string | null
           id?: string
           reason_code?: string
@@ -230,6 +313,13 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "run_feedback_artifact_id_fkey"
+            columns: ["artifact_id"]
+            isOneToOne: false
+            referencedRelation: "artifacts"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "run_feedback_run_id_fkey"
             columns: ["run_id"]
             isOneToOne: false
@@ -238,6 +328,44 @@ export type Database = {
           },
           {
             foreignKeyName: "run_feedback_video_id_fkey"
+            columns: ["video_id"]
+            isOneToOne: false
+            referencedRelation: "videos"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      external_insights: {
+        Row: {
+          created_at: string
+          id: string
+          insights: Json
+          raw_summary: string | null
+          source: string
+          user_id: string
+          video_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          insights?: Json
+          raw_summary?: string | null
+          source: string
+          user_id: string
+          video_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          insights?: Json
+          raw_summary?: string | null
+          source?: string
+          user_id?: string
+          video_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "external_insights_video_id_fkey"
             columns: ["video_id"]
             isOneToOne: false
             referencedRelation: "videos"
