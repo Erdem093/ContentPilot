@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 🚀 Content Pipeline Machine for Creators
 
 > 🧪 Built for the Anyway & Animoca Minds Hackathon
