@@ -1,75 +1,67 @@
-# Content Pipeline Machine
+# 🚀 Content Pipeline Machine for Creators
 
-Demo app for the Anyway + Animoca hackathon tracks.
+> 🧪 Built for the Anyway & Animoca Minds Hackathon
 
-## What this MVP now includes
+## 🧠 Overview
+Content Pipeline Machine is an AI-powered content autopilot for challenge-based creators. It transforms raw ideas into fully structured, high-performing videos by automating planning, scripting, hook generation, and performance analysis. Instead of spending hours on pre- and post-production, creators can focus on filming while the system handles everything else. The platform is built around an iterative workflow where each "run" generates multiple content artifacts (scripts, hooks, titles), allowing creators to refine and optimise their output over time.
 
-- Supabase auth + RLS-backed tables (`profiles`, `videos`, `runs`, `artifacts`)
-- Real pipeline execution via Supabase Edge Function (`run-pipeline`)
-- One-agent AI generation (OpenAI) producing 4 artifacts: `story`, `script`, `hook`, `title`
-- Run-level observability metadata (`trace_id`, `trace_url`, model, error) shown in Observability
-- Stripe test-mode subscription checkout + webhook sync to `profiles`
-- Billing page reflects real subscription status and monthly run usage
+---
 
-## Local frontend setup
+## 🏗️ Architecture (High-Level)
 
-1. Install dependencies:
+> 📌 Diagram coming soon — see `/docs/system-diagram.png`
 
-```bash
-npm install
-```
+Frontend (Lovable / Next.js)
+↓
+Backend API (Node / Python)
+↓
+Agent Layer (OpenAI + Flock)
+↓
+Observability (Anyway SDK)
+↓
+Database (Postgres)
+↓
+Persistent Agents (Animoca Minds)
 
-2. Copy env template and fill values:
+---
 
-```bash
-cp .env.example .env
-```
+## ⚙️ Setup (Coming Soon)
 
-3. Start app:
+> Full setup instructions will be added here.
 
-```bash
-npm run dev
-```
+Planned steps:
+- Clone repository
+- Install dependencies
+- Configure environment variables (OpenAI, Flock, Anyway, Stripe)
+- Run development server
 
-## Supabase migration
+## 📂 Project Structure
+/docs → Pitch materials, diagrams, and documentation
+/src → Application source code
+README.md → Project overview
 
-Apply migrations (including billing + trace columns):
+## 🧩 Core Concepts
 
-```bash
-supabase db push
-```
+- **Video** → A content project (e.g. "Learn guitar in 24 hours")
+- **Run** → One execution of the AI pipeline
+- **Artifacts** → Outputs (scripts, hooks, titles, etc.)
+- **Approval Flow** → User selects and refines outputs
 
-## Edge functions
+---
 
-Functions added:
+## 💡 Vision
 
-- `run-pipeline`
-- `create-checkout-session`
-- `stripe-webhook`
+Build a system where:
+> One day of filming → fully automated multi-platform content pipeline
 
-Deploy:
+---
 
-```bash
-supabase functions deploy run-pipeline
-supabase functions deploy create-checkout-session
-supabase functions deploy stripe-webhook
-```
+## 📌 Status
 
-## Required Supabase function secrets
+🚧 MVP in development (Hackathon Build)
 
-Set these in Supabase project secrets:
+---
 
-- `OPENAI_API_KEY`
-- `OPENAI_MODEL` (optional, default `gpt-4.1-mini`)
-- `ANYWAY_TRACE_BASE_URL` (optional, used to build trace links)
-- `ANYWAY_PROJECT_ID` (optional)
-- `ANYWAY_API_URL` (optional, best-effort event emit)
-- `ANYWAY_API_KEY` (optional)
-- `STRIPE_SECRET_KEY`
-- `STRIPE_WEBHOOK_SECRET`
-- `STRIPE_STARTER_PRICE_ID` (optional allow-list)
-- `STRIPE_PRO_PRICE_ID` (optional allow-list)
+## 📄 Docs
 
-## Stripe webhook
-
-`stripe-webhook` has JWT verification disabled in `supabase/config.toml`, so Stripe can call it directly. Configure Stripe endpoint to point at your deployed function URL.
+All supporting materials (pitch, diagrams, architecture notes) are in `/docs`.
