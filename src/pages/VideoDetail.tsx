@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, Play, Clock, CheckCircle, XCircle } from "lucide-react";
+import { ArrowLeft, Play, Clock, CheckCircle, XCircle, Trash2 } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { AppLayout } from "@/components/AppLayout";
@@ -9,6 +10,17 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 
 interface RunRow {
   id: string;
@@ -29,6 +41,7 @@ interface VideoRow {
 
 export default function VideoDetail() {
   const { videoId } = useParams();
+  const navigate = useNavigate();
   const { user } = useAuth();
   const { toast } = useToast();
   const [video, setVideo] = useState<VideoRow | null>(null);
@@ -36,6 +49,7 @@ export default function VideoDetail() {
   const [artifactCounts, setArtifactCounts] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const fetchData = async () => {
     if (!videoId) return;
@@ -93,6 +107,28 @@ export default function VideoDetail() {
     return <Clock className="h-4 w-4 text-warning" />;
   };
 
+  const deleteProject = async () => {
+    if (!videoId) return;
+    setDeleting(true);
+
+    const { data, error } = await supabase.functions.invoke("delete-project", {
+      body: { videoId },
+    });
+
+    if (error || (data as { error?: string } | null)?.error) {
+      toast({
+        title: "Delete failed",
+        description: error?.message || (data as { error?: string } | null)?.error || "Unknown error",
+        variant: "destructive",
+      });
+      setDeleting(false);
+      return;
+    }
+
+    toast({ title: "Project deleted", description: "Video and related runs were removed." });
+    navigate("/dashboard");
+  };
+
   if (loading) {
     return (
       <AppLayout>
@@ -130,10 +166,34 @@ export default function VideoDetail() {
               <span className="text-sm text-muted-foreground">Created {format(new Date(video.created_at), "MMM d, yyyy")}</span>
             </div>
           </div>
-          <Button onClick={triggerRun} disabled={running}>
-            <Play className="mr-2 h-4 w-4" />
-            {running ? "Running..." : "New Run"}
-          </Button>
+          <div className="flex items-center gap-2">
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="outline" className="text-destructive border-destructive hover:bg-destructive/10">
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete Project
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete this project?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This will permanently delete this video, all runs, artifacts, feedback, and related insights.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={deleteProject} disabled={deleting}>
+                    {deleting ? "Deleting..." : "Delete"}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+            <Button onClick={triggerRun} disabled={running || deleting}>
+              <Play className="mr-2 h-4 w-4" />
+              {running ? "Running..." : "New Run"}
+            </Button>
+          </div>
         </div>
 
         <div>

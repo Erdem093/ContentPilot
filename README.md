@@ -102,6 +102,7 @@ Deployed/used functions:
 - `stripe-webhook`
 - `create-connect-account`
 - `create-connect-checkout-session`
+- `delete-project`
 - `queue-youtube-analysis`
 - `openclaw-pull-jobs`
 - `openclaw-push-insights`
@@ -115,6 +116,7 @@ supabase functions deploy create-checkout-session
 supabase functions deploy stripe-webhook
 supabase functions deploy create-connect-account
 supabase functions deploy create-connect-checkout-session
+supabase functions deploy delete-project
 supabase functions deploy queue-youtube-analysis
 supabase functions deploy openclaw-pull-jobs
 supabase functions deploy openclaw-push-insights
