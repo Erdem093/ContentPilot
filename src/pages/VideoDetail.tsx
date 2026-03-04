@@ -79,6 +79,9 @@ export default function VideoDetail() {
   const [suggestingTarget, setSuggestingTarget] = useState<"title" | "description" | null>(null);
   const [approvedOutputs, setApprovedOutputs] = useState<ApprovedOutputRow[]>([]);
   const [applyingBaseline, setApplyingBaseline] = useState<string | null>(null);
+  const [runStageIndex, setRunStageIndex] = useState(0);
+
+  const RUN_STAGES = ["Generating agents...", "Generating thumbnail...", "Finalizing run..."];
 
   const fetchData = async () => {
     if (!videoId) return;
@@ -166,6 +169,19 @@ export default function VideoDetail() {
   };
 
   useEffect(() => { fetchData(); }, [videoId]);
+
+  useEffect(() => {
+    if (!running) {
+      setRunStageIndex(0);
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setRunStageIndex((prev) => (prev + 1) % RUN_STAGES.length);
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [running]);
 
   const triggerRun = async () => {
     if (!videoId || !user) return;
@@ -390,7 +406,7 @@ export default function VideoDetail() {
             </AlertDialog>
             <Button onClick={triggerRun} disabled={running || deleting}>
               <Play className="mr-2 h-4 w-4" />
-              {running ? "Running..." : "New Run"}
+              {running ? RUN_STAGES[runStageIndex] : "New Run"}
             </Button>
             {!editingMeta && (
               <Button variant="outline" onClick={() => setEditingMeta(true)}>
@@ -409,7 +425,7 @@ export default function VideoDetail() {
                 <p className="text-muted-foreground mb-4">No runs yet. Trigger your first AI pipeline run.</p>
                 <Button onClick={triggerRun} disabled={running}>
                   <Play className="mr-2 h-4 w-4" />
-                  {running ? "Running..." : "Run Pipeline"}
+                  {running ? RUN_STAGES[runStageIndex] : "Run Pipeline"}
                 </Button>
               </CardContent>
             </Card>

@@ -5,6 +5,19 @@ const OPENAI_MODEL = Deno.env.get("OPENAI_MODEL") ?? "gpt-4.1-mini";
 const OPENAI_IMAGE_MODEL = Deno.env.get("OPENAI_IMAGE_MODEL") ?? "gpt-image-1";
 const AGENT_VERSION = "v2";
 const SERVICE_NAME = "studio-mind-run-pipeline";
+const THUMBNAIL_STYLE_BASELINE = [
+  "Create a high-CTR YouTube-style thumbnail in a bold creator aesthetic.",
+  "Composition guidance:",
+  "- Large expressive human subject on one side with strong emotion and clear face visibility.",
+  "- Main object/topic on the opposite side, isolated and instantly recognizable.",
+  "- Add a thick red directional arrow pointing to the main object/topic.",
+  "- Add a short uppercase headline (2-4 words) with thick dark outline and neon/bright fill.",
+  "- Use bright sky/green-ground or similarly vivid high-contrast background.",
+  "- Saturated colors, sharp edges, heavy contrast, subtle drop shadows, clean cutout feel.",
+  "- Keep layout simple and readable at small size.",
+  "Hard constraints:",
+  "- No watermarks, no logos, no small unreadable text, no cluttered scenes.",
+].join("\n");
 
 type AgentName = "HookAgent" | "ScriptAgent" | "TitleAgent" | "StrategyAgent";
 type ArtifactType = "hook" | "script" | "title" | "strategy" | "thumbnail";
@@ -513,6 +526,7 @@ async function generateThumbnail(
   openAiApiKey: string,
   prompt: string,
 ): Promise<{ bytes: Uint8Array; model: string; prompt: string }> {
+  const finalPrompt = `${THUMBNAIL_STYLE_BASELINE}\n\nCreative brief:\n${prompt}`;
   const response = await fetch("https://api.openai.com/v1/images/generations", {
     method: "POST",
     headers: {
@@ -521,8 +535,8 @@ async function generateThumbnail(
     },
     body: JSON.stringify({
       model: OPENAI_IMAGE_MODEL,
-      prompt,
-      size: "1024x1024",
+      prompt: finalPrompt,
+      size: "1536x1024",
     }),
   });
 
@@ -550,7 +564,7 @@ async function generateThumbnail(
   return {
     bytes,
     model: OPENAI_IMAGE_MODEL,
-    prompt,
+    prompt: finalPrompt,
   };
 }
 
