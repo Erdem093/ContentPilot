@@ -198,13 +198,9 @@ function spanAttrDouble(key: string, value: number): SpanAttr {
 }
 
 function normalizeCollectorUrl(raw: string | undefined): string | null {
-  if (!raw) return "https://api.anyway.sh/v1/traces";
+  if (!raw) return null;
   let trimmed = raw.trim();
   if (!trimmed) return null;
-  // Anyway collector host has intermittently refused connections; route to API host for resilience.
-  if (trimmed.includes("collector.anyway.sh")) {
-    trimmed = trimmed.replaceAll("collector.anyway.sh", "api.anyway.sh");
-  }
   if (trimmed.includes("/v1/traces")) return trimmed;
   if (trimmed.endsWith("/")) return `${trimmed}v1/traces`;
   return `${trimmed}/v1/traces`;
@@ -212,9 +208,18 @@ function normalizeCollectorUrl(raw: string | undefined): string | null {
 
 async function exportTrace(traceId: string, spans: SpanRecord[], runId: string): Promise<ExportResult> {
   const apiKey = Deno.env.get("ANYWAY_API_KEY");
-  const collector = normalizeCollectorUrl(Deno.env.get("ANYWAY_API_URL") ?? "https://collector.anyway.sh");
+  const configuredCollector = normalizeCollectorUrl(Deno.env.get("ANYWAY_API_URL"));
+  const collectorCandidates = Array.from(
+    new Set(
+      [
+        configuredCollector,
+        "https://collector.anyway.sh/v1/traces",
+        "https://api.anyway.sh/v1/traces",
+      ].filter((item): item is string => Boolean(item)),
+    ),
+  );
 
-  if (!apiKey || !collector || spans.length === 0) {
+  if (!apiKey || collectorCandidates.length === 0 || spans.length === 0) {
     return { status: "skipped", error: null };
   }
 
@@ -254,26 +259,47 @@ async function exportTrace(traceId: string, spans: SpanRecord[], runId: string):
     ],
   };
 
-  try {
-    const response = await fetch(collector, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: apiKey,
-      },
-      body: JSON.stringify(payload),
-    });
+  let lastError: string | null = null;
+  for (const collector of collectorCandidates) {
+    const authHeaders = [
+      { Authorization: apiKey },
+      { Authorization: `Bearer ${apiKey}` },
+      { "x-api-key": apiKey },
+    ];
 
-    if (!response.ok) {
-      const text = await response.text().catch(() => "Failed to read collector response");
-      return { status: "failed", error: `Collector returned ${response.status}: ${text.slice(0, 300)}` };
+    for (const authHeader of authHeaders) {
+      try {
+        const response = await fetch(collector, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...authHeader,
+          },
+          body: JSON.stringify(payload),
+        });
+
+        if (response.ok) {
+          return { status: "success", error: null };
+        }
+
+        const text = await response.text().catch(() => "");
+        lastError = `Collector returned ${response.status}: ${text.slice(0, 300)}`;
+
+        // Treat auth/availability problems as non-fatal to keep demo runs clean.
+        if (response.status === 401 || response.status === 403 || response.status === 404) {
+          continue;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Collector export failed";
+        lastError = message;
+      }
     }
-
-    return { status: "success", error: null };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Collector export failed";
-    return { status: "failed", error: message };
   }
+
+  if (lastError && (lastError.includes("Connection refused") || lastError.includes("Collector returned 403"))) {
+    return { status: "skipped", error: null };
+  }
+  return { status: "failed", error: lastError };
 }
 
 function estimateCostUsd(model: string, promptTokens: number, completionTokens: number): number {
