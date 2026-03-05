@@ -75,7 +75,7 @@ Deno.serve(async (req) => {
       .maybeSingle(),
     adminClient
       .from("channel_inspirations")
-      .select("youtube_url, note, label")
+      .select("youtube_url, note")
       .eq("user_id", user.id)
       .order("created_at", { ascending: false })
       .limit(10),
@@ -93,7 +93,7 @@ Deno.serve(async (req) => {
     `Notes: ${preference?.notes ?? "none"}`,
     `Inspirations: ${(inspirations || []).length > 0
       ? (inspirations || [])
-        .map((item) => `${item.youtube_url}${item.note ? ` (${item.note})` : ""}${item.label ? ` [${item.label}]` : ""}`)
+        .map((item) => `${item.youtube_url}${item.note ? ` (${item.note})` : ""}`)
         .join("; ")
       : "none"}`,
   ];

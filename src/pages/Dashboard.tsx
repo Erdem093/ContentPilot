@@ -22,6 +22,14 @@ interface VideoRow {
   created_at: string;
 }
 
+async function readFunctionErrorMessage(error: unknown): Promise<string> {
+  const fallback = error instanceof Error ? error.message : "Unknown error";
+  const maybe = error as { context?: { json?: () => Promise<{ error?: string }> } };
+  if (!maybe.context?.json) return fallback;
+  const payload = await maybe.context.json().catch(() => null);
+  return payload?.error || fallback;
+}
+
 export default function Dashboard() {
   const { user } = useAuth();
   const { toast } = useToast();
@@ -79,9 +87,10 @@ export default function Dashboard() {
     });
 
     if (error || (data as { error?: string } | null)?.error) {
+      const description = error ? await readFunctionErrorMessage(error) : (data as { error?: string } | null)?.error || "Unknown error";
       toast({
         title: "Suggestion failed",
-        description: error?.message || (data as { error?: string } | null)?.error || "Unknown error",
+        description,
         variant: "destructive",
       });
       setSuggestingTarget(null);
