@@ -198,9 +198,13 @@ function spanAttrDouble(key: string, value: number): SpanAttr {
 }
 
 function normalizeCollectorUrl(raw: string | undefined): string | null {
-  if (!raw) return null;
-  const trimmed = raw.trim();
+  if (!raw) return "https://api.anyway.sh/v1/traces";
+  let trimmed = raw.trim();
   if (!trimmed) return null;
+  // Anyway collector host has intermittently refused connections; route to API host for resilience.
+  if (trimmed.includes("collector.anyway.sh")) {
+    trimmed = trimmed.replaceAll("collector.anyway.sh", "api.anyway.sh");
+  }
   if (trimmed.includes("/v1/traces")) return trimmed;
   if (trimmed.endsWith("/")) return `${trimmed}v1/traces`;
   return `${trimmed}/v1/traces`;
